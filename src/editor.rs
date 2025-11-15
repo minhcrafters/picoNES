@@ -16,7 +16,7 @@ impl Editor {
         if let Err(e) = self.repl() {
             panic!("{e:#?}");
         }
-        print!("Goodbye!\n");
+        println!("Goodbye!");
     }
 
     pub fn repl(&mut self) -> Result<(), std::io::Error> {
