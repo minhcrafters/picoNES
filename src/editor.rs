@@ -1,38 +1,52 @@
 use crossterm::{
-    event::Event::Key,
-    event::KeyCode::Char,
-    event::read,
+    event::{Event::Key, KeyCode::Char, KeyEvent, KeyModifiers, read},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
-pub struct Editor {}
+pub struct Editor {
+    should_quit: bool,
+}
 
 impl Editor {
     pub fn default() -> Self {
-        Editor {}
+        Editor { should_quit: false }
     }
-    pub fn run(&self) {
-        enable_raw_mode().unwrap();
+
+    pub fn run(&mut self) {
+        if let Err(e) = self.repl() {
+            panic!("{e:#?}");
+        }
+        print!("Goodbye!\n");
+    }
+
+    pub fn repl(&mut self) -> Result<(), std::io::Error> {
+        enable_raw_mode()?;
 
         loop {
-            match read() {
-                Ok(Key(event)) => {
-                    println!("{:?} \r", event);
+            if let Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+                state,
+            }) = read()?
+            {
+                println!(
+                    "Code: {code:?} Modifiers: {modifiers:?} Kind: {kind:?} State: {state:?} \r"
+                );
 
-                    match event.code {
-                        Char(c) => {
-                            if c == 'q' {
-                                break;
-                            }
-                        }
-                        _ => (),
+                match code {
+                    Char('q') if modifiers == KeyModifiers::CONTROL => {
+                        self.should_quit = true;
                     }
+                    _ => {}
                 }
-                Err(err) => println!("Error: {}", err),
-                _ => (),
+            }
+            if self.should_quit {
+                break;
             }
         }
 
-        disable_raw_mode().unwrap();
+        disable_raw_mode()?;
+        Ok(())
     }
 }
