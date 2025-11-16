@@ -42,7 +42,7 @@ fn main() {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
     let window = video_subsystem
-        .window("game", (256.0 * 3.0) as u32, (240.0 * 3.0) as u32)
+        .window("pico", (256.0 * 3.0) as u32, (240.0 * 3.0) as u32)
         .position_centered()
         .build()
         .unwrap();
@@ -57,7 +57,7 @@ fn main() {
         .unwrap();
 
     // the game cycle
-    let bus = Bus::new(rom, move |ppu, joypad1| {
+    let bus = Bus::new(&rom, move |ppu, joypad1| {
         pico::render::render(ppu, &mut frame);
         texture.update(None, &frame.data, 256 * 3).unwrap();
 

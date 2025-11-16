@@ -1,4 +1,4 @@
-use crate::{cart::Cart, joypad::Joypad, ppu::PPU};
+use crate::{cart::Cart, joypad::Joypad, mapper::Mapper, ppu::PPU};
 
 const RAM: u16 = 0x0000;
 const RAM_MIRRORS_END: u16 = 0x1FFF;
@@ -6,8 +6,8 @@ const PPU_REGISTERS_MIRRORS_END: u16 = 0x3FFF;
 
 pub struct Bus<'call> {
     cpu_vram: [u8; 2048],
-    prg_rom: Vec<u8>,
-    ppu: PPU,
+    mapper: &'call dyn Mapper,
+    ppu: PPU<'call>,
 
     cycles: usize,
     gameloop_callback: Box<dyn FnMut(&PPU, &mut Joypad) + 'call>,
@@ -16,14 +16,14 @@ pub struct Bus<'call> {
 }
 
 impl<'a> Bus<'a> {
-    pub fn new<'call, F>(cart: Cart, gameloop_callback: F) -> Bus<'call>
+    pub fn new<'call, F>(cart: &'call Cart, gameloop_callback: F) -> Bus<'call>
     where
         F: FnMut(&PPU, &mut Joypad) + 'call,
     {
         Bus {
             cpu_vram: [0; 2048],
-            prg_rom: cart.prg_rom,
-            ppu: PPU::new(cart.chr_rom, cart.screen_mirroring),
+            mapper: &*cart.mapper,
+            ppu: PPU::new(&*cart.mapper),
             cycles: 0,
             gameloop_callback: Box::from(gameloop_callback),
             joypad1: Joypad::new(),
@@ -64,7 +64,7 @@ impl<'a> Bus<'a> {
             }
             0x8000..=0xFFFF => self.read_prg_rom(addr),
             _ => {
-                println!("Ignoring mem access at {}", addr);
+                // println!("Ignoring mem access at {}", addr);
                 0
             }
         }
@@ -131,9 +131,9 @@ impl<'a> Bus<'a> {
                 self.write(mirror_down_addr, data);
                 // todo!("PPU is not supported yet");
             }
-            0x8000..=0xFFFF => panic!("Attempt to write to Cartridge ROM space: {:x}", addr),
+            0x8000..=0xFFFF => self.mapper.write_prg(addr, data),
             _ => {
-                println!("Ignoring mem write-access at {}", addr);
+                // println!("Ignoring mem write-access at 0x{:04X}", addr);
             }
         }
     }
@@ -173,12 +173,7 @@ impl<'a> Bus<'a> {
         self.ppu.poll_nmi_interrupt()
     }
 
-    fn read_prg_rom(&self, mut addr: u16) -> u8 {
-        addr -= 0x8000;
-        if self.prg_rom.len() == 0x4000 && addr >= 0x4000 {
-            // mirror if needed
-            addr = addr % 0x4000;
-        }
-        self.prg_rom[addr as usize]
+    fn read_prg_rom(&self, addr: u16) -> u8 {
+        self.mapper.read_prg(addr)
     }
 }

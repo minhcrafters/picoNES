@@ -1,4 +1,5 @@
 use crate::cart::Mirroring;
+use crate::mapper::Mapper;
 use registers::addr::AddrRegister;
 use registers::control::ControlRegister;
 use registers::mask::MaskRegister;
@@ -7,9 +8,8 @@ use registers::status::StatusRegister;
 
 pub mod registers;
 
-pub struct PPU {
-    pub chr_rom: Vec<u8>,
-    pub mirroring: Mirroring,
+pub struct PPU<'a> {
+    pub mapper: &'a dyn Mapper,
     pub ctrl: ControlRegister,
     pub mask: MaskRegister,
     pub status: StatusRegister,
@@ -29,15 +29,14 @@ pub struct PPU {
     internal_data_buf: u8,
 }
 
-impl PPU {
-    pub fn empty() -> Self {
-        PPU::new(vec![0; 2048], Mirroring::Horizontal)
+impl<'a> PPU<'a> {
+    pub fn empty(mapper: &'a dyn Mapper) -> Self {
+        PPU::new(mapper)
     }
 
-    pub fn new(chr_rom: Vec<u8>, mirroring: Mirroring) -> Self {
+    pub fn new(mapper: &'a dyn Mapper) -> Self {
         PPU {
-            chr_rom: chr_rom,
-            mirroring: mirroring,
+            mapper,
             ctrl: ControlRegister::new(),
             mask: MaskRegister::new(),
             status: StatusRegister::new(),
@@ -65,7 +64,7 @@ impl PPU {
         let mirrored_vram = addr & 0b10111111111111; // mirror down 0x3000-0x3eff to 0x2000 - 0x2eff
         let vram_index = mirrored_vram - 0x2000; // to vram vector
         let name_table = vram_index / 0x400;
-        match (&self.mirroring, name_table) {
+        match (&self.mapper.mirroring(), name_table) {
             (Mirroring::Vertical, 2) | (Mirroring::Vertical, 3) => vram_index - 0x800,
             (Mirroring::Horizontal, 2) => vram_index - 0x400,
             (Mirroring::Horizontal, 1) => vram_index - 0x400,
@@ -79,7 +78,7 @@ impl PPU {
     }
 }
 
-impl PPU {
+impl<'a> PPU<'a> {
     pub fn write_to_ctrl(&mut self, value: u8) {
         let before_nmi_status = self.ctrl.generate_vblank_nmi();
         self.ctrl.update(value);
@@ -124,7 +123,7 @@ impl PPU {
     pub fn write_to_data(&mut self, value: u8) {
         let addr = self.addr.get();
         match addr {
-            0..=0x1fff => println!("attempt to write to chr rom space {}", addr),
+            0..=0x1fff => self.mapper.write_chr(addr, value),
             0x2000..=0x2fff => {
                 self.vram[self.mirror_vram_addr(addr) as usize] = value;
             }
@@ -151,7 +150,7 @@ impl PPU {
         match addr {
             0..=0x1fff => {
                 let result = self.internal_data_buf;
-                self.internal_data_buf = self.chr_rom[addr as usize];
+                self.internal_data_buf = self.mapper.read_chr(addr);
                 result
             }
             0x2000..=0x2fff => {
@@ -221,11 +220,14 @@ impl PPU {
 
 #[cfg(test)]
 pub mod test {
+    use crate::mapper::nrom::NromMapper;
+
     use super::*;
 
     #[test]
     fn test_ppu_vram_writes() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
         ppu.write_to_data(0x66);
@@ -235,7 +237,8 @@ pub mod test {
 
     #[test]
     fn test_ppu_vram_reads() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ctrl(0);
         ppu.vram[0x0305] = 0x66;
 
@@ -249,7 +252,8 @@ pub mod test {
 
     #[test]
     fn test_ppu_vram_reads_cross_page() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ctrl(0);
         ppu.vram[0x01ff] = 0x66;
         ppu.vram[0x0200] = 0x77;
@@ -264,7 +268,8 @@ pub mod test {
 
     #[test]
     fn test_ppu_vram_reads_step_32() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ctrl(0b100);
         ppu.vram[0x01ff] = 0x66;
         ppu.vram[0x01ff + 32] = 0x77;
@@ -284,7 +289,8 @@ pub mod test {
     //   [0x2800 B ] [0x2C00 b ]
     #[test]
     fn test_vram_horizontal_mirror() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ppu_addr(0x24);
         ppu.write_to_ppu_addr(0x05);
 
@@ -313,7 +319,8 @@ pub mod test {
     //   [0x2800 a ] [0x2C00 b ]
     #[test]
     fn test_vram_vertical_mirror() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Vertical);
+        let mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::Vertical);
+        let mut ppu = PPU::new(&mapper);
 
         ppu.write_to_ppu_addr(0x20);
         ppu.write_to_ppu_addr(0x05);
@@ -340,7 +347,8 @@ pub mod test {
 
     #[test]
     fn test_read_status_resets_latch() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.vram[0x0305] = 0x66;
 
         ppu.write_to_ppu_addr(0x21);
@@ -361,7 +369,8 @@ pub mod test {
 
     #[test]
     fn test_ppu_vram_mirroring() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_ctrl(0);
         ppu.vram[0x0305] = 0x66;
 
@@ -375,7 +384,8 @@ pub mod test {
 
     #[test]
     fn test_read_status_resets_vblank() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.status.set_vblank_status(true);
 
         let status = ppu.read_status();
@@ -386,7 +396,8 @@ pub mod test {
 
     #[test]
     fn test_oam_read_write() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
         ppu.write_to_oam_addr(0x10);
         ppu.write_to_oam_data(0x66);
         ppu.write_to_oam_data(0x77);
@@ -400,7 +411,8 @@ pub mod test {
 
     #[test]
     fn test_oam_dma() {
-        let mut ppu = PPU::empty();
+        let mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mapper);
 
         let mut data = [0x66; 256];
         data[0] = 0x77;
