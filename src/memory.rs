@@ -1,13 +1,16 @@
+use std::fs::File;
+use std::io::Write;
+
 pub struct Memory {
-    data: [u8; 0xFFFF],
+    data: [u8; 0x10000],
 }
 
 impl Memory {
     pub fn new() -> Self {
-        Memory { data: [0; 0xFFFF] }
+        Memory { data: [0; 0x10000] }
     }
 
-    pub fn read(&self, addr: u16) -> u8 {
+    pub fn read(&mut self, addr: u16) -> u8 {
         self.data[addr as usize]
     }
 
@@ -35,6 +38,40 @@ impl Memory {
     }
 
     pub fn clear(&mut self) {
-        self.data = [0; 0xFFFF];
+        self.data = [0; 0x10000];
+    }
+
+    pub fn dump_to_file(&self, path: &str) -> std::io::Result<()> {
+        let mut file = File::create(path)?;
+        let bytes_per_row = 16usize;
+
+        for (row_idx, chunk) in self.data.chunks(bytes_per_row).enumerate() {
+            let offset = row_idx * bytes_per_row;
+            write!(file, "{:08x}: ", offset)?;
+
+            for j in 0..bytes_per_row {
+                if j < chunk.len() {
+                    write!(file, "{:02x} ", chunk[j])?;
+                } else {
+                    write!(file, "   ")?;
+                }
+                if j == 7 {
+                    write!(file, " ")?;
+                }
+            }
+
+            write!(file, " |")?;
+            for &b in chunk {
+                let ch = if (0x20..=0x7e).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                };
+                write!(file, "{}", ch)?;
+            }
+            writeln!(file, "|")?;
+        }
+
+        Ok(())
     }
 }
