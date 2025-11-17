@@ -104,8 +104,8 @@ fn render_nametable(
 
             for x in (0..=7).rev() {
                 let value = (1 & lower) << 1 | (1 & upper);
-                upper = upper >> 1;
-                lower = lower >> 1;
+                upper >>= 1;
+                lower >>= 1;
                 let pixel_x = tile_column * 8 + x;
                 let pixel_y = tile_row * 8 + y;
 

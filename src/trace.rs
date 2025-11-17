@@ -21,7 +21,7 @@ pub fn trace<M: Memory>(cpu: &mut CPU<M>) -> String {
 
     let tmp = match ops.bytes {
         1 => match ops.code {
-            0x0a | 0x4a | 0x2a | 0x6a => format!("A "),
+            0x0a | 0x4a | 0x2a | 0x6a => "A ".to_string(),
             _ => String::from(""),
         },
         2 => {

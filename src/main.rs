@@ -95,17 +95,13 @@ fn main() {
     let shared_buttons_for_bus = shared_buttons.clone();
 
     let bus = Bus::new(&mut rom, move |ppu, joypad1, joypad2| {
-        if movie1.is_some() {
-            let movie = movie1.as_mut().unwrap();
-
+        if let Some(movie) = &mut movie1 {
             if frame_count < movie.frame_count() {
                 let _ = movie.apply_frame_input(frame_count, joypad1, joypad2);
             }
-        } else {
-            if let Ok(sb) = shared_buttons_for_bus.lock() {
-                for (btn, pressed) in sb.iter() {
-                    joypad1.set_button_pressed_status(*btn, *pressed);
-                }
+        } else if let Ok(sb) = shared_buttons_for_bus.lock() {
+            for (btn, pressed) in sb.iter() {
+                joypad1.set_button_pressed_status(*btn, *pressed);
             }
         }
 
@@ -141,19 +137,19 @@ fn main() {
                     cpu.reset();
                 }
                 Event::KeyDown { keycode, .. } => {
-                    if let Some(kc) = keycode {
-                        if let Some(btn) = key_map.get(&kc) {
-                            let mut sb = shared_buttons.lock().unwrap();
-                            sb.insert(*btn, true);
-                        }
+                    if let Some(kc) = keycode
+                        && let Some(btn) = key_map.get(&kc)
+                    {
+                        let mut sb = shared_buttons.lock().unwrap();
+                        sb.insert(*btn, true);
                     }
                 }
                 Event::KeyUp { keycode, .. } => {
-                    if let Some(kc) = keycode {
-                        if let Some(btn) = key_map.get(&kc) {
-                            let mut sb = shared_buttons.lock().unwrap();
-                            sb.insert(*btn, false);
-                        }
+                    if let Some(kc) = keycode
+                        && let Some(btn) = key_map.get(&kc)
+                    {
+                        let mut sb = shared_buttons.lock().unwrap();
+                        sb.insert(*btn, false);
                     }
                 }
                 _ => {}

@@ -21,6 +21,12 @@ pub struct Joypad {
     strobe: bool,
 }
 
+impl Default for Joypad {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Joypad {
     pub fn new() -> Self {
         Joypad {

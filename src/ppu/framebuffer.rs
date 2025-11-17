@@ -2,6 +2,12 @@ pub struct Framebuffer {
     pub data: Vec<u8>,
 }
 
+impl Default for Framebuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Framebuffer {
     pub const WIDTH: usize = 256;
     pub const HEIGHT: usize = 240;

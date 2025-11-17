@@ -80,7 +80,7 @@ pub struct Cart {
 
 impl Cart {
     pub fn new(raw: &Vec<u8>) -> Result<Cart, String> {
-        if &raw[0..4] != NES_TAG {
+        if raw[0..4] != NES_TAG {
             return Err("File is not in iNES file format".to_string());
         }
 
@@ -210,7 +210,7 @@ pub mod test {
             ],
             trainer: None,
             pgp_rom: pgp_rom_contents,
-            chr_rom: vec![2; 1 * CHR_ROM_PAGE_SIZE],
+            chr_rom: vec![2; CHR_ROM_PAGE_SIZE],
         });
 
         Cart::new(&test_rom).unwrap()

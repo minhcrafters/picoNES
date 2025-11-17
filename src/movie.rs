@@ -338,15 +338,14 @@ fn parse_input_log(
             continue;
         }
 
-        let record = parse_text_record(&trimmed_line, header)?;
+        let record = parse_text_record(trimmed_line, header)?;
         input_log.push(record);
 
         // Respect length limit if specified
-        if let Some(length) = header.length {
-            if input_log.len() >= length {
+        if let Some(length) = header.length
+            && input_log.len() >= length {
                 break;
             }
-        }
     }
 
     Ok(input_log)
@@ -406,7 +405,7 @@ fn parse_gamepad_input(input: &str) -> Result<GamepadInput, String> {
     let chars: Vec<char> = input.chars().collect();
 
     // Ensure we have at least 8 characters, pad with dots if necessary
-    let mut padded_chars = vec!['.'; 8];
+    let mut padded_chars = ['.'; 8];
     for (i, &ch) in chars.iter().take(8).enumerate() {
         padded_chars[i] = ch;
     }

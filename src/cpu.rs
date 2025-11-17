@@ -117,15 +117,14 @@ impl<M: Memory> CPU<M> {
             }
 
             // Check for IRQ (maskable interrupt) if not disabled
-            if let Some(_irq) = self.memory.poll_irq_status() {
-                if !self
+            if let Some(_irq) = self.memory.poll_irq_status()
+                && !self
                     .registers
                     .status
                     .contains(StatusFlags::INTERRUPT_DISABLE)
                 {
                     self.interrupt(interrupt::IRQ);
                 }
-            }
 
             let opcode = self.memory.read(self.registers.pc);
             // println!("{:?}", self.registers);

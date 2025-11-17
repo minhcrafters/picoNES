@@ -30,6 +30,12 @@ bitflags! {
     }
 }
 
+impl Default for ControlRegister {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ControlRegister {
     pub fn new() -> Self {
         ControlRegister::from_bits_truncate(0b00000000)
@@ -86,7 +92,7 @@ impl ControlRegister {
     }
 
     pub fn generate_vblank_nmi(&self) -> bool {
-        return self.contains(ControlRegister::GENERATE_NMI);
+        self.contains(ControlRegister::GENERATE_NMI)
     }
 
     pub fn update(&mut self, data: u8) {

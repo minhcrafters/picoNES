@@ -115,6 +115,12 @@ pub struct OpcodeMap {
     opcodes: Vec<Opcode>,
 }
 
+impl Default for OpcodeMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpcodeMap {
     pub fn new() -> Self {
         OpcodeMap {
@@ -340,4 +346,4 @@ impl OpcodeMap {
     }
 }
 
-pub static CPU_OPCODES: LazyLock<OpcodeMap> = LazyLock::new(|| OpcodeMap::new());
+pub static CPU_OPCODES: LazyLock<OpcodeMap> = LazyLock::new(OpcodeMap::new);

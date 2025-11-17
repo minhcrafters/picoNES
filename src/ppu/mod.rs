@@ -286,7 +286,7 @@ impl<'a> PPU<'a> {
                 self.status.set_sprite_zero_hit(true);
             }
 
-            self.cycles = self.cycles - 341;
+            self.cycles -= 341;
             self.scanline += 1;
 
             if self.scanline == 241 {
@@ -306,7 +306,7 @@ impl<'a> PPU<'a> {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     pub fn poll_nmi_interrupt(&mut self) -> Option<u8> {

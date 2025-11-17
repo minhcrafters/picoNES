@@ -13,6 +13,12 @@ pub struct ScrollRegister {
     latch: bool,
 }
 
+impl Default for ScrollRegister {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScrollRegister {
     pub fn new() -> Self {
         ScrollRegister {
