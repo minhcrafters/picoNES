@@ -14,12 +14,7 @@ struct Rect {
 
 impl Rect {
     fn new(x1: usize, y1: usize, x2: usize, y2: usize) -> Self {
-        Rect {
-            x1: x1,
-            y1: y1,
-            x2: x2,
-            y2: y2,
-        }
+        Rect { x1, y1, x2, y2 }
     }
 }
 
@@ -253,18 +248,23 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
     let mut bg_priority = vec![0u8; Framebuffer::WIDTH * Framebuffer::HEIGHT];
 
     let scroll_segments = ppu.scroll_segments();
-    let mut fallback_segment: Option<Vec<ScrollSegment>> = None;
-    let segments: &[ScrollSegment] = if scroll_segments.is_empty() {
+
+    let fallback = if scroll_segments.is_empty() {
         let scroll_x = ppu.scroll.scroll_x();
         let scroll_y = ppu.scroll.scroll_y();
         let base_index = ppu.scroll.base_nametable();
-        fallback_segment = Some(vec![ScrollSegment {
+        Some(ScrollSegment {
             start_scanline: 0,
             scroll_x,
             scroll_y,
             base_nametable: base_index,
-        }]);
-        fallback_segment.as_ref().unwrap()
+        })
+    } else {
+        None
+    };
+
+    let segments: &[ScrollSegment] = if let Some(fallback_segment) = fallback.as_ref() {
+        std::slice::from_ref(fallback_segment)
     } else {
         scroll_segments
     };

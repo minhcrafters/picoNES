@@ -259,7 +259,7 @@ impl<'a> PPU<'a> {
                 self.internal_data_buf = self.vram[self.mirror_vram_addr(addr) as usize];
                 result
             }
-            0x3000..=0x3eff => unimplemented!("addr {} shouldn't be used in reallity", addr),
+            0x3000..=0x3eff => unimplemented!("addr {} shouldn't be used really", addr),
 
             //Addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C
             0x3f10 | 0x3f14 | 0x3f18 | 0x3f1c => {

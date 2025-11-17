@@ -11,10 +11,10 @@ pub fn trace<M: Memory>(cpu: &mut CPU<M>) -> String {
     let mut hex_dump = vec![];
     hex_dump.push(code);
 
-    let (mem_addr, stored_value) = match ops.addressing_mode {
+    let (mem_addr, stored_value) = match ops.mode {
         AddressingMode::Immediate | AddressingMode::None => (0, 0),
         _ => {
-            let (addr, _) = cpu.get_operand_address(&ops.addressing_mode);
+            let (addr, _) = cpu.get_operand_address(&ops.mode);
             (addr, cpu.memory.read(addr))
         }
     };
@@ -29,7 +29,7 @@ pub fn trace<M: Memory>(cpu: &mut CPU<M>) -> String {
             // let value = cpu.bus.read(address));
             hex_dump.push(address);
 
-            match ops.addressing_mode {
+            match ops.mode {
                 AddressingMode::Immediate => format!("#${:02x}", address),
                 AddressingMode::ZeroPage => format!("${:02x} = {:02x}", mem_addr, stored_value),
                 AddressingMode::ZeroPageX => format!(
@@ -72,7 +72,7 @@ pub fn trace<M: Memory>(cpu: &mut CPU<M>) -> String {
 
             let address = cpu.memory.read_u16(begin + 1);
 
-            match ops.addressing_mode {
+            match ops.mode {
                 AddressingMode::None => {
                     if ops.code == 0x6c {
                         //jmp indirect
@@ -101,7 +101,7 @@ pub fn trace<M: Memory>(cpu: &mut CPU<M>) -> String {
                 ),
                 _ => panic!(
                     "unexpected addressing mode {:?} has ops-len 3. code {:02x}",
-                    ops.addressing_mode, ops.code
+                    ops.mode, ops.code
                 ),
             }
         }

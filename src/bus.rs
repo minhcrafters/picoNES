@@ -39,14 +39,22 @@ impl<'a> Bus<'a> {
             ppu,
             cycles: 0,
             gameloop_callback: Box::new(gameloop_callback),
-            joypad1: Joypad::new(0),
-            joypad2: Joypad::new(1),
+            joypad1: Joypad::new(),
+            joypad2: Joypad::new(),
         }
+    }
+
+    fn mirror_cpu_vram_addr(addr: u16) -> usize {
+        (addr & CPU_RAM_MIRROR_MASK) as usize
+    }
+
+    fn normalize_ppu_register_addr(addr: u16) -> u16 {
+        0x2000 + (addr & 0x0007)
     }
 }
 
-impl<'a> Bus<'a> {
-    pub fn read(&mut self, addr: u16) -> u8 {
+impl<'a> Memory for Bus<'a> {
+    fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=CPU_RAM_MIRRORS_END => self.cpu_vram[Self::mirror_cpu_vram_addr(addr)],
             0x2000..=PPU_REGISTERS_MIRRORS_END => match Self::normalize_ppu_register_addr(addr) {
@@ -65,7 +73,7 @@ impl<'a> Bus<'a> {
         }
     }
 
-    pub fn write(&mut self, addr: u16, data: u8) {
+    fn write(&mut self, addr: u16, data: u8) {
         match addr {
             0x0000..=CPU_RAM_MIRRORS_END => {
                 self.cpu_vram[Self::mirror_cpu_vram_addr(addr)] = data;
@@ -112,27 +120,7 @@ impl<'a> Bus<'a> {
         }
     }
 
-    pub fn read_u16(&mut self, addr: u16) -> u16 {
-        let lo = self.read(addr) as u16;
-        let hi = self.read(addr + 1) as u16;
-        (hi << 8) | lo
-    }
-
-    pub fn write_u16(&mut self, addr: u16, value: u16) {
-        let lo = (value & 0xFF) as u8;
-        let hi = (value >> 8) as u8;
-        self.write(addr, lo);
-        self.write(addr + 1, hi);
-    }
-
-    pub fn load(&mut self, start_addr: u16, data: &[u8]) {
-        for i in 0..(data.len() as u16) {
-            self.write(start_addr + i, data[i as usize]);
-        }
-        self.write_u16(0xFFFC, start_addr);
-    }
-
-    pub fn tick(&mut self, cycles: u8) {
+    fn tick(&mut self, cycles: u8) {
         self.cycles += cycles as usize;
         let nmi_before = self.ppu.nmi_interrupt.is_some();
         self.ppu.tick(cycles * 3);
@@ -143,45 +131,18 @@ impl<'a> Bus<'a> {
         }
     }
 
-    pub fn poll_nmi_status(&mut self) -> Option<u8> {
+    fn poll_nmi_status(&mut self) -> Option<u8> {
         self.ppu.poll_nmi_interrupt()
     }
 
-    pub fn poll_irq_status(&mut self) -> Option<u8> {
+    fn poll_irq_status(&mut self) -> Option<u8> {
         self.mapper.poll_irq()
     }
 
-    fn mirror_cpu_vram_addr(addr: u16) -> usize {
-        (addr & CPU_RAM_MIRROR_MASK) as usize
-    }
-
-    fn normalize_ppu_register_addr(addr: u16) -> u16 {
-        0x2000 + (addr & 0x0007)
-    }
-}
-
-impl<'a> Memory for Bus<'a> {
-    fn read(&mut self, addr: u16) -> u8 {
-        self.read(addr)
-    }
-
-    fn write(&mut self, addr: u16, data: u8) {
-        self.write(addr, data);
-    }
-
-    fn tick(&mut self, cycles: u8) {
-        self.tick(cycles);
-    }
-
-    fn poll_nmi_status(&mut self) -> Option<u8> {
-        self.poll_nmi_status()
-    }
-
-    fn poll_irq_status(&mut self) -> Option<u8> {
-        self.poll_irq_status()
-    }
-
     fn load(&mut self, start_addr: u16, data: &[u8]) {
-        self.load(start_addr, data);
+        for i in 0..(data.len() as u16) {
+            self.write(start_addr + i, data[i as usize]);
+        }
+        self.write_u16(0xFFFC, start_addr);
     }
 }

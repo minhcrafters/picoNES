@@ -22,10 +22,10 @@ pub struct Joypad {
 }
 
 impl Joypad {
-    pub fn new(port: u8) -> Self {
+    pub fn new() -> Self {
         Joypad {
             strobe: false,
-            button_index: port,
+            button_index: 0,
             button_status: JoypadButton::from_bits_truncate(0),
         }
     }
@@ -59,7 +59,7 @@ mod test {
 
     #[test]
     fn test_strobe_mode() {
-        let mut joypad = Joypad::new(0);
+        let mut joypad = Joypad::new();
         joypad.write(1);
         joypad.set_button_pressed_status(JoypadButton::BUTTON_A, true);
         for _x in 0..10 {
@@ -69,7 +69,7 @@ mod test {
 
     #[test]
     fn test_strobe_mode_on_off() {
-        let mut joypad = Joypad::new(0);
+        let mut joypad = Joypad::new();
 
         joypad.write(0);
         joypad.set_button_pressed_status(JoypadButton::RIGHT, true);

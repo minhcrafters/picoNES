@@ -17,7 +17,8 @@ use sdl2::pixels::PixelFormatEnum;
 #[derive(Parser)]
 struct CliArgs {
     rom_file: String,
-    // movie_file: String,
+    movie_file: Option<String>,
+
     #[arg(short, long)]
     debug: bool,
 }
@@ -75,31 +76,45 @@ fn main() {
         }
     }
 
+    let mut movie1: Option<FM2Movie> = None;
+
+    if let Some(movie_path) = args.movie_file {
+        match FM2Movie::load_from_file(movie_path) {
+            Ok(movie) => {
+                movie1 = Some(movie);
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+            }
+        }
+    }
+
+    let mut frame_count: usize = 0;
+
     let frame_tx_clone = frame_tx.clone();
     let shared_buttons_for_bus = shared_buttons.clone();
 
-    let bus = Bus::new(&mut rom, move |ppu, joypad1, _joypad2| {
-        if let Ok(sb) = shared_buttons_for_bus.lock() {
-            for (btn, pressed) in sb.iter() {
-                joypad1.set_button_pressed_status(*btn, *pressed);
+    let bus = Bus::new(&mut rom, move |ppu, joypad1, joypad2| {
+        if movie1.is_some() {
+            let movie = movie1.as_mut().unwrap();
+
+            if frame_count < movie.frame_count() {
+                let _ = movie.apply_frame_input(frame_count, joypad1, joypad2);
+            }
+        } else {
+            if let Ok(sb) = shared_buttons_for_bus.lock() {
+                for (btn, pressed) in sb.iter() {
+                    joypad1.set_button_pressed_status(*btn, *pressed);
+                }
             }
         }
 
         let mut fb = Framebuffer::new();
         pico::ppu::render::render(ppu, &mut fb);
         let _ = frame_tx_clone.send(fb.data);
+
+        frame_count += 1;
     });
-
-    // let mut movie1: FM2Movie;
-
-    // match FM2Movie::load_from_file(args.movie_file) {
-    //     Ok(movie) => {
-    //         movie1 = movie;
-    //     }
-    //     Err(e) => {
-    //         eprintln!("Error: {e}");
-    //     }
-    // }
 
     let mut cpu = CPU::new(bus);
 
@@ -119,11 +134,15 @@ fn main() {
                 } => {
                     std::process::exit(0);
                 }
+                Event::KeyDown {
+                    keycode: Some(Keycode::R),
+                    ..
+                } => {
+                    cpu.reset();
+                }
                 Event::KeyDown { keycode, .. } => {
                     if let Some(kc) = keycode {
-                        if kc == Keycode::R {
-                            cpu.reset();
-                        } else if let Some(btn) = key_map.get(&kc) {
+                        if let Some(btn) = key_map.get(&kc) {
                             let mut sb = shared_buttons.lock().unwrap();
                             sb.insert(*btn, true);
                         }

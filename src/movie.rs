@@ -166,6 +166,8 @@ impl FM2Movie {
             }
 
             joypad1.button_status = buttons;
+
+            // println!("{:?}", joypad1.button_status);
         }
 
         // Apply port1 input

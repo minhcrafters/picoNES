@@ -91,7 +91,7 @@ impl<M: Memory> CPU<M> {
                 a: 0,
                 x: 0,
                 y: 0,
-                status: StatusFlags::from_bits_truncate(0b100100),
+                status: StatusFlags::from_bits_truncate(0b00100100),
                 pc: PRG_START,
                 sp: 0xFD,
             },
@@ -137,45 +137,45 @@ impl<M: Memory> CPU<M> {
             if let Some(opcode_info) = CPU_OPCODES.find_by_code(opcode) {
                 match opcode_info.mnemonic {
                     Mnemonic::ADC => {
-                        self.adc(&opcode_info.addressing_mode);
+                        self.adc(&opcode_info.mode);
                     }
                     Mnemonic::AND => {
-                        self.and(&opcode_info.addressing_mode);
+                        self.and(&opcode_info.mode);
                     }
                     Mnemonic::ASL => {
-                        self.asl(&opcode_info.addressing_mode);
+                        self.asl(&opcode_info.mode);
                     }
                     Mnemonic::BCC => {
-                        self.bcc(&opcode_info.addressing_mode);
+                        self.bcc(&opcode_info.mode);
                     }
                     Mnemonic::BCS => {
-                        self.bcs(&opcode_info.addressing_mode);
+                        self.bcs(&opcode_info.mode);
                     }
                     Mnemonic::BEQ => {
-                        self.beq(&opcode_info.addressing_mode);
+                        self.beq(&opcode_info.mode);
                     }
                     Mnemonic::BIT => {
-                        self.bit(&opcode_info.addressing_mode);
+                        self.bit(&opcode_info.mode);
                     }
                     Mnemonic::BMI => {
-                        self.bmi(&opcode_info.addressing_mode);
+                        self.bmi(&opcode_info.mode);
                     }
                     Mnemonic::BNE => {
-                        self.bne(&opcode_info.addressing_mode);
+                        self.bne(&opcode_info.mode);
                     }
                     Mnemonic::BPL => {
-                        self.bpl(&opcode_info.addressing_mode);
+                        self.bpl(&opcode_info.mode);
                     }
                     Mnemonic::BRK => {
-                        self.brk(&opcode_info.addressing_mode);
+                        self.brk(&opcode_info.mode);
                         // println!("BRK encountered. Halting execution.");
                         // break;
                     }
                     Mnemonic::BVC => {
-                        self.bvc(&opcode_info.addressing_mode);
+                        self.bvc(&opcode_info.mode);
                     }
                     Mnemonic::BVS => {
-                        self.bvs(&opcode_info.addressing_mode);
+                        self.bvs(&opcode_info.mode);
                     }
                     Mnemonic::CLC => {
                         self.clc();
@@ -190,16 +190,16 @@ impl<M: Memory> CPU<M> {
                         self.clv();
                     }
                     Mnemonic::CMP => {
-                        self.cmp(&opcode_info.addressing_mode);
+                        self.cmp(&opcode_info.mode);
                     }
                     Mnemonic::CPX => {
-                        self.cpx(&opcode_info.addressing_mode);
+                        self.cpx(&opcode_info.mode);
                     }
                     Mnemonic::CPY => {
-                        self.cpy(&opcode_info.addressing_mode);
+                        self.cpy(&opcode_info.mode);
                     }
                     Mnemonic::DEC => {
-                        self.dec(&opcode_info.addressing_mode);
+                        self.dec(&opcode_info.mode);
                     }
                     Mnemonic::DEX => {
                         self.dex();
@@ -208,10 +208,10 @@ impl<M: Memory> CPU<M> {
                         self.dey();
                     }
                     Mnemonic::EOR => {
-                        self.eor(&opcode_info.addressing_mode);
+                        self.eor(&opcode_info.mode);
                     }
                     Mnemonic::INC => {
-                        self.inc(&opcode_info.addressing_mode);
+                        self.inc(&opcode_info.mode);
                     }
                     Mnemonic::INX => {
                         self.inx();
@@ -220,28 +220,28 @@ impl<M: Memory> CPU<M> {
                         self.iny();
                     }
                     Mnemonic::JMP => {
-                        self.jmp(&opcode_info.addressing_mode);
+                        self.jmp(&opcode_info.mode);
                     }
                     Mnemonic::JSR => {
-                        self.jsr(&opcode_info.addressing_mode);
+                        self.jsr(&opcode_info.mode);
                     }
                     Mnemonic::LDA => {
-                        self.lda(&opcode_info.addressing_mode);
+                        self.lda(&opcode_info.mode);
                     }
                     Mnemonic::LDX => {
-                        self.ldx(&opcode_info.addressing_mode);
+                        self.ldx(&opcode_info.mode);
                     }
                     Mnemonic::LDY => {
-                        self.ldy(&opcode_info.addressing_mode);
+                        self.ldy(&opcode_info.mode);
                     }
                     Mnemonic::LSR => {
-                        self.lsr(&opcode_info.addressing_mode);
+                        self.lsr(&opcode_info.mode);
                     }
                     Mnemonic::NOP => {
                         self.nop();
                     }
                     Mnemonic::ORA => {
-                        self.ora(&opcode_info.addressing_mode);
+                        self.ora(&opcode_info.mode);
                     }
                     Mnemonic::PHA => {
                         self.pha();
@@ -256,10 +256,10 @@ impl<M: Memory> CPU<M> {
                         self.plp();
                     }
                     Mnemonic::ROL => {
-                        self.rol(&opcode_info.addressing_mode);
+                        self.rol(&opcode_info.mode);
                     }
                     Mnemonic::ROR => {
-                        self.ror(&opcode_info.addressing_mode);
+                        self.ror(&opcode_info.mode);
                     }
                     Mnemonic::RTI => {
                         self.rti();
@@ -268,7 +268,7 @@ impl<M: Memory> CPU<M> {
                         self.rts();
                     }
                     Mnemonic::SBC => {
-                        self.sbc(&opcode_info.addressing_mode);
+                        self.sbc(&opcode_info.mode);
                     }
                     Mnemonic::SEC => {
                         self.sec();
@@ -280,13 +280,13 @@ impl<M: Memory> CPU<M> {
                         self.sei();
                     }
                     Mnemonic::STA => {
-                        self.sta(&opcode_info.addressing_mode);
+                        self.sta(&opcode_info.mode);
                     }
                     Mnemonic::STX => {
-                        self.stx(&opcode_info.addressing_mode);
+                        self.stx(&opcode_info.mode);
                     }
                     Mnemonic::STY => {
-                        self.sty(&opcode_info.addressing_mode);
+                        self.sty(&opcode_info.mode);
                     }
                     Mnemonic::TAX => {
                         self.tax();
@@ -337,7 +337,6 @@ impl<M: Memory> CPU<M> {
     pub fn load(&mut self, program: Vec<u8>, start_addr: Option<u16>) {
         let load_addr = start_addr.unwrap_or(PRG_START);
         self.memory.load(load_addr, &program);
-        self.memory.write_u16(0xFFFC, load_addr);
     }
 
     #[allow(dead_code)]
