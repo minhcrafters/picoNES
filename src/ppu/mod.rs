@@ -17,6 +17,7 @@ pub struct ScrollSegment {
     pub scroll_x: usize,
     pub scroll_y: usize,
     pub base_nametable: usize,
+    pub screen_origin: usize,
 }
 
 pub struct PPU<'a> {
@@ -39,7 +40,7 @@ pub struct PPU<'a> {
 
     internal_data_buf: u8,
     scroll_segments: Vec<ScrollSegment>,
-    pending_scroll_descriptor: Option<(usize, usize, usize)>,
+    pending_scroll_descriptor: Option<(usize, usize, usize, usize)>,
 }
 
 impl<'a> PPU<'a> {
@@ -94,6 +95,16 @@ impl<'a> PPU<'a> {
         }
     }
 
+    /// Mirrors palette addresses to the 0x3F00-0x3F1F range, handling the
+    /// universal background color mirrors described at https://www.nesdev.org/wiki/PPU_palettes.
+    fn mirror_palette_addr(addr: u16) -> usize {
+        let mut palette_index = (addr - 0x3f00) & 0x1f;
+        if palette_index >= 0x10 && (palette_index & 0x03) == 0 {
+            palette_index -= 0x10;
+        }
+        palette_index as usize
+    }
+
     fn increment_vram_addr(&mut self) {
         self.addr.increment(self.ctrl.vram_addr_increment());
     }
@@ -117,7 +128,12 @@ impl<'a> PPU<'a> {
         }
     }
 
-    fn push_scroll_segment(&mut self, descriptor: (usize, usize, usize), scanline: usize) {
+    fn push_scroll_segment(
+        &mut self,
+        descriptor: (usize, usize, usize),
+        scanline: usize,
+        screen_origin: usize,
+    ) {
         let (scroll_x, scroll_y, base_nametable) = descriptor;
         if let Some(last) = self.scroll_segments.last_mut() {
             if last.start_scanline == scanline {
@@ -126,6 +142,7 @@ impl<'a> PPU<'a> {
                     scroll_x,
                     scroll_y,
                     base_nametable,
+                    screen_origin,
                 };
                 return;
             }
@@ -133,6 +150,7 @@ impl<'a> PPU<'a> {
             if last.scroll_x == scroll_x
                 && last.scroll_y == scroll_y
                 && last.base_nametable == base_nametable
+                && last.screen_origin == screen_origin
             {
                 return;
             }
@@ -143,15 +161,34 @@ impl<'a> PPU<'a> {
             scroll_x,
             scroll_y,
             base_nametable,
+            screen_origin,
         });
     }
 
-    fn queue_scroll_state_change(&mut self) {
+    fn queue_scroll_state_change(&mut self, reset_origin: bool) {
         let descriptor = self.current_scroll_descriptor();
         if let Some(scanline) = self.visible_scanline() {
-            self.push_scroll_segment(descriptor, scanline.min(239));
+            let scanline = scanline.min(239);
+            let screen_origin = if reset_origin {
+                scanline
+            } else {
+                self.scroll_segments
+                    .last()
+                    .map(|segment| segment.screen_origin)
+                    .unwrap_or(0)
+            };
+            self.push_scroll_segment(descriptor, scanline, screen_origin);
         } else {
-            self.pending_scroll_descriptor = Some(descriptor);
+            let screen_origin = if reset_origin {
+                0
+            } else {
+                self.pending_scroll_descriptor
+                    .map(|(_, _, _, origin)| origin)
+                    .or_else(|| self.scroll_segments.last().map(|segment| segment.screen_origin))
+                    .unwrap_or(0)
+            };
+            self.pending_scroll_descriptor =
+                Some((descriptor.0, descriptor.1, descriptor.2, screen_origin));
         }
     }
 
@@ -159,13 +196,17 @@ impl<'a> PPU<'a> {
         let descriptor = self
             .pending_scroll_descriptor
             .take()
-            .unwrap_or_else(|| self.current_scroll_descriptor());
+            .unwrap_or_else(|| {
+                let (scroll_x, scroll_y, base_nametable) = self.current_scroll_descriptor();
+                (scroll_x, scroll_y, base_nametable, 0)
+            });
         self.scroll_segments.clear();
         self.scroll_segments.push(ScrollSegment {
             start_scanline: 0,
             scroll_x: descriptor.0,
             scroll_y: descriptor.1,
             base_nametable: descriptor.2,
+            screen_origin: descriptor.3,
         });
     }
 }
@@ -173,12 +214,14 @@ impl<'a> PPU<'a> {
 impl<'a> PPU<'a> {
     pub fn write_to_ctrl(&mut self, value: u8) {
         let before_nmi_status = self.ctrl.generate_vblank_nmi();
+        let previous_base_nametable = self.scroll.base_nametable();
         self.ctrl.update(value);
         self.scroll.update_ctrl(value);
+        let base_changed = previous_base_nametable != self.scroll.base_nametable();
         if !before_nmi_status && self.ctrl.generate_vblank_nmi() && self.status.is_in_vblank() {
             self.nmi_interrupt = Some(1);
         }
-        self.queue_scroll_state_change();
+        self.queue_scroll_state_change(base_changed);
     }
 
     pub fn write_to_mask(&mut self, value: u8) {
@@ -209,7 +252,7 @@ impl<'a> PPU<'a> {
     pub fn write_to_scroll(&mut self, value: u8) {
         let completed_sequence = self.scroll.write(value);
         if completed_sequence {
-            self.queue_scroll_state_change();
+            self.queue_scroll_state_change(true);
         }
     }
 
@@ -217,7 +260,7 @@ impl<'a> PPU<'a> {
         self.addr.update(value);
         let completed_sequence = self.scroll.write_ppu_addr(value);
         if completed_sequence {
-            self.queue_scroll_state_change();
+            self.queue_scroll_state_change(true);
         }
     }
 
@@ -225,18 +268,12 @@ impl<'a> PPU<'a> {
         let addr = self.addr.get();
         match addr {
             0..=0x1fff => self.mapper.write_chr(addr, value),
-            0x2000..=0x2fff => {
+            0x2000..=0x3eff => {
                 self.vram[self.mirror_vram_addr(addr) as usize] = value;
             }
-            0x3000..=0x3eff => unimplemented!("addr {} shouldn't be used in reallity", addr),
-
-            //Addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C
-            0x3f10 | 0x3f14 | 0x3f18 | 0x3f1c => {
-                let add_mirror = addr - 0x10;
-                self.palette_table[(add_mirror - 0x3f00) as usize] = value;
-            }
             0x3f00..=0x3fff => {
-                self.palette_table[(addr - 0x3f00) as usize] = value;
+                let palette_index = PPU::mirror_palette_addr(addr);
+                self.palette_table[palette_index] = value & 0x3f;
             }
             _ => panic!("unexpected access to mirrored space {}", addr),
         }
@@ -254,20 +291,19 @@ impl<'a> PPU<'a> {
                 self.internal_data_buf = self.mapper.read_chr(addr);
                 result
             }
-            0x2000..=0x2fff => {
+            0x2000..=0x3eff => {
                 let result = self.internal_data_buf;
                 self.internal_data_buf = self.vram[self.mirror_vram_addr(addr) as usize];
                 result
             }
-            0x3000..=0x3eff => unimplemented!("addr {} shouldn't be used really", addr),
-
-            //Addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C
-            0x3f10 | 0x3f14 | 0x3f18 | 0x3f1c => {
-                let add_mirror = addr - 0x10;
-                self.palette_table[(add_mirror - 0x3f00) as usize]
+            0x3f00..=0x3fff => {
+                let palette_index = PPU::mirror_palette_addr(addr);
+                // Palette reads are unbuffered; instead, the read buffer receives the mirrored nametable byte.
+                let mirrored_vram_addr = addr - 0x1000;
+                self.internal_data_buf =
+                    self.vram[self.mirror_vram_addr(mirrored_vram_addr) as usize];
+                self.palette_table[palette_index]
             }
-
-            0x3f00..=0x3fff => self.palette_table[(addr - 0x3f00) as usize],
             _ => panic!("unexpected access to mirrored space {}", addr),
         }
     }
@@ -480,13 +516,13 @@ pub mod test {
 
         assert_eq!(ppu.scroll_segments().len(), 1);
         ppu.scanline = 100;
-        ppu.write_to_scroll(0x14); // coarse X = 0x02 -> scroll_x = 16
+        ppu.write_to_scroll(0x14); // coarse X = 0x02, fine X = 4 -> scroll_x = 20
         ppu.write_to_scroll(0x08); // coarse Y = 1 -> scroll_y = 8
 
         assert_eq!(ppu.scroll_segments().len(), 2);
         let segment = &ppu.scroll_segments()[1];
         assert_eq!(segment.start_scanline, 100);
-        assert_eq!(segment.scroll_x, 16);
+        assert_eq!(segment.scroll_x, 20);
         assert_eq!(segment.scroll_y, 8);
     }
 
@@ -540,6 +576,55 @@ pub mod test {
         ppu.read_data(); //load into_buffer
         assert_eq!(ppu.read_data(), 0x66);
         // assert_eq!(ppu.addr.read(), 0x0306)
+    }
+
+    #[test]
+    fn test_palette_address_mirroring() {
+        let mut mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mut mapper);
+
+        fn write_palette(ppu: &mut PPU<'_>, addr: u16, value: u8) {
+            ppu.write_to_ppu_addr((addr >> 8) as u8);
+            ppu.write_to_ppu_addr((addr & 0xff) as u8);
+            ppu.write_to_data(value);
+        }
+
+        write_palette(&mut ppu, 0x3f00, 0x11);
+        assert_eq!(ppu.palette_table[0x00], 0x11);
+
+        // Sprite universal background mirrors.
+        write_palette(&mut ppu, 0x3f10, 0x22);
+        assert_eq!(ppu.palette_table[0x00], 0x22);
+
+        // General palette mirroring every 32 bytes.
+        write_palette(&mut ppu, 0x3f20, 0x33);
+        assert_eq!(ppu.palette_table[0x00], 0x33);
+
+        write_palette(&mut ppu, 0x3f1c, 0x3d);
+        assert_eq!(ppu.palette_table[0x0c], 0x3d & 0x3f);
+    }
+
+    #[test]
+    fn test_palette_reads_update_buffer() {
+        let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = PPU::empty(&mut mapper);
+
+        let mirrored_vram = ppu.mirror_vram_addr(0x2f00) as usize;
+        ppu.vram[mirrored_vram] = 0xaa;
+
+        // Seed palette entry 0.
+        ppu.write_to_ppu_addr(0x3f);
+        ppu.write_to_ppu_addr(0x00);
+        ppu.write_to_data(0x2f);
+
+        // Reset address and read back – should bypass the buffered read delay
+        // but refresh the buffer with the mirrored nametable contents.
+        ppu.write_to_ppu_addr(0x3f);
+        ppu.write_to_ppu_addr(0x00);
+        ppu.internal_data_buf = 0;
+        let data = ppu.read_data();
+        assert_eq!(data, 0x2f);
+        assert_eq!(ppu.internal_data_buf, 0xaa);
     }
 
     #[test]

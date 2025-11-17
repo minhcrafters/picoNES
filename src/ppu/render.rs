@@ -258,6 +258,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
             scroll_x,
             scroll_y,
             base_nametable: base_index,
+            screen_origin: 0,
         })
     } else {
         None

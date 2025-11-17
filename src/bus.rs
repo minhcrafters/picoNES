@@ -1,4 +1,4 @@
-use crate::{cart::Cart, joypad::Joypad, mapper::Mapper, memory::Memory, ppu::PPU};
+use crate::{apu::APU, cart::Cart, joypad::Joypad, mapper::Mapper, memory::Memory, ppu::PPU};
 
 // Address ranges per https://www.nesdev.org/wiki/CPU_memory_map
 const CPU_RAM_MIRROR_MASK: u16 = 0x07FF;
@@ -11,6 +11,7 @@ pub struct Bus<'call> {
     cpu_vram: [u8; 2048],
     mapper: &'call mut dyn Mapper,
     ppu: PPU<'call>,
+    apu: APU,
 
     cycles: usize,
     gameloop_callback: Box<dyn FnMut(&PPU, &mut Joypad, &mut Joypad) + 'call>,
@@ -20,7 +21,7 @@ pub struct Bus<'call> {
 }
 
 impl<'a> Bus<'a> {
-    pub fn new<F>(cart: &'_ mut Cart, gameloop_callback: F) -> Bus<'_>
+    pub fn new<F>(cart: &'_ mut Cart, apu: APU, gameloop_callback: F) -> Bus<'_>
     where
         F: FnMut(&PPU, &mut Joypad, &mut Joypad) + 'static,
     {
@@ -37,6 +38,7 @@ impl<'a> Bus<'a> {
             cpu_vram: [0; 2048],
             mapper: unsafe { &mut *mapper_ptr },
             ppu,
+            apu,
             cycles: 0,
             gameloop_callback: Box::new(gameloop_callback),
             joypad1: Joypad::new(),
@@ -65,7 +67,7 @@ impl<'a> Memory for Bus<'a> {
             },
             0x4000..=0x4013 => 0,
             0x4014 => 0,
-            0x4015 => 0,
+            0x4015 => self.apu.read_status(),
             0x4016 => self.joypad1.read(),
             0x4017 => 0, // self.joypad2.read(),
             0x4018..=DISABLED_APU_IO_END => 0,
@@ -90,7 +92,7 @@ impl<'a> Memory for Bus<'a> {
                 _ => {}
             },
             0x4000..=0x4013 => {
-                // ignore APU writes for now
+                self.apu.write_register(addr, data);
             }
             0x4014 => {
                 let mut buffer: [u8; 256] = [0; 256];
@@ -106,12 +108,11 @@ impl<'a> Memory for Bus<'a> {
                 // self.tick(add_cycles); //todo this will cause weird effects as PPU will have 513/514 * 3 ticks
             }
             0x4015 => {
-                // ignore APU status
+                self.apu.write_status(data);
             }
             0x4016 => self.joypad1.write(data),
             0x4017 => {
-                // ignore joypad 2 / APU frame counter for now
-                // self.joypad2.write(data);
+                self.apu.write_frame_counter(data);
             }
             0x4018..=DISABLED_APU_IO_END => {
                 // disabled APU and IO functionality
@@ -122,6 +123,12 @@ impl<'a> Memory for Bus<'a> {
 
     fn tick(&mut self, cycles: u8) {
         self.cycles += cycles as usize;
+        for _ in 0..cycles {
+            if let Some(addr) = self.apu.clock() {
+                let value = self.read(addr);
+                self.apu.provide_dmc_sample(value);
+            }
+        }
         let nmi_before = self.ppu.nmi_interrupt.is_some();
         self.ppu.tick(cycles * 3);
         let nmi_after = self.ppu.nmi_interrupt.is_some();
@@ -136,7 +143,11 @@ impl<'a> Memory for Bus<'a> {
     }
 
     fn poll_irq_status(&mut self) -> Option<u8> {
-        self.mapper.poll_irq()
+        if let Some(v) = self.apu.poll_irq() {
+            Some(v)
+        } else {
+            self.mapper.poll_irq()
+        }
     }
 
     fn load(&mut self, start_addr: u16, data: &[u8]) {

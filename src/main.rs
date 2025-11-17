@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, mpsc::channel};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{mpsc::channel, Arc, Mutex};
 
 use clap::Parser;
+use pico::apu::APU;
 use pico::bus::Bus;
 use pico::cart::Cart;
 use pico::cpu::CPU;
@@ -10,9 +11,34 @@ use pico::movie::FM2Movie;
 use pico::ppu::framebuffer::Framebuffer;
 use pico::trace::trace;
 
+use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
+
+struct ApuAudioCallback {
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl AudioCallback for ApuAudioCallback {
+    type Channel = f32;
+
+    fn callback(&mut self, out: &mut [f32]) {
+        if let Ok(mut buf) = self.buffer.lock() {
+            for sample in out.iter_mut() {
+                if let Some(v) = buf.pop_front() {
+                    *sample = v;
+                } else {
+                    *sample = 0.0;
+                }
+            }
+        } else {
+            for sample in out.iter_mut() {
+                *sample = 0.0;
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 struct CliArgs {
@@ -31,6 +57,7 @@ fn main() {
 
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
+    let audio_subsystem = sdl_context.audio().unwrap();
     let window = video_subsystem
         .window("pico", (256.0 * 3.0) as u32, (240.0 * 3.0) as u32)
         .position_centered()
@@ -45,6 +72,22 @@ fn main() {
         .unwrap();
 
     let mut event_pump = sdl_context.event_pump().unwrap();
+
+    let audio_buffer: Arc<Mutex<VecDeque<f32>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(96_000)));
+    let desired_spec = AudioSpecDesired {
+        freq: Some(44_100),
+        channels: Some(1),
+        samples: Some(1024),
+    };
+    let audio_buffer_for_device = audio_buffer.clone();
+    let audio_device = audio_subsystem
+        .open_playback(None, &desired_spec, move |_spec| ApuAudioCallback {
+            buffer: audio_buffer_for_device,
+        })
+        .unwrap();
+    audio_device.resume();
+    let sample_rate = audio_device.spec().freq.max(1) as u32;
 
     let mut key_map = HashMap::new();
     key_map.insert(Keycode::Down, joypad::JoypadButton::DOWN);
@@ -94,7 +137,9 @@ fn main() {
     let frame_tx_clone = frame_tx.clone();
     let shared_buttons_for_bus = shared_buttons.clone();
 
-    let bus = Bus::new(&mut rom, move |ppu, joypad1, joypad2| {
+    let apu = APU::new(sample_rate, audio_buffer.clone());
+
+    let bus = Bus::new(&mut rom, apu, move |ppu, joypad1, joypad2| {
         if let Some(movie) = &mut movie1 {
             if frame_count < movie.frame_count() {
                 let _ = movie.apply_frame_input(frame_count, joypad1, joypad2);
