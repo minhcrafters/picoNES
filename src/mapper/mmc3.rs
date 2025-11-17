@@ -1,5 +1,5 @@
 use crate::cart::Mirroring;
-use crate::mapper::Mapper;
+use crate::mapper::{ChrSource, Mapper};
 
 const PRG_BANK_SIZE: usize = 0x2000;
 const CHR_BANK_SIZE_1K: usize = 0x0400;
@@ -319,7 +319,7 @@ impl Mapper for Mmc3Mapper {
         }
     }
 
-    fn read_chr(&self, addr: u16) -> u8 {
+    fn read_chr(&self, addr: u16, _source: ChrSource) -> u8 {
         if self.chr.is_empty() {
             0
         } else {
@@ -460,16 +460,16 @@ mod tests {
 
         select_register(&mut mapper, 0);
         mapper.write_prg(0x8001, 0x02);
-        assert_eq!(mapper.read_chr(0x0000), 2);
-        assert_eq!(mapper.read_chr(0x0400), 3);
+        assert_eq!(mapper.read_chr(0x0000, ChrSource::Cpu), 2);
+        assert_eq!(mapper.read_chr(0x0400, ChrSource::Cpu), 3);
 
         select_register(&mut mapper, 2);
         mapper.write_prg(0x8001, 0x07);
-        assert_eq!(mapper.read_chr(0x1000), 7);
+        assert_eq!(mapper.read_chr(0x1000, ChrSource::Cpu), 7);
 
         select_register(&mut mapper, 3);
         mapper.write_prg(0x8001, 0x01);
-        assert_eq!(mapper.read_chr(0x1400), 1);
+        assert_eq!(mapper.read_chr(0x1400, ChrSource::Cpu), 1);
     }
 
     #[test]
@@ -480,15 +480,15 @@ mod tests {
 
         mapper.write_prg(0x8000, 0x80 | 0x00);
         mapper.write_prg(0x8001, 0x04);
-        assert_eq!(mapper.read_chr(0x1000), 4);
+        assert_eq!(mapper.read_chr(0x1000, ChrSource::Cpu), 4);
 
         mapper.write_prg(0x8000, 0x80 | 0x01);
         mapper.write_prg(0x8001, 0x06);
-        assert_eq!(mapper.read_chr(0x1800), 6);
-        assert_eq!(mapper.read_chr(0x1C00), 7);
+        assert_eq!(mapper.read_chr(0x1800, ChrSource::Cpu), 6);
+        assert_eq!(mapper.read_chr(0x1C00, ChrSource::Cpu), 7);
 
         mapper.write_prg(0x8000, 0x82);
         mapper.write_prg(0x8001, 0x03);
-        assert_eq!(mapper.read_chr(0x0000), 3);
+        assert_eq!(mapper.read_chr(0x0000, ChrSource::Cpu), 3);
     }
 }

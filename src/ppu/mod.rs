@@ -4,7 +4,7 @@ pub mod registers;
 pub mod render;
 
 use crate::cart::Mirroring;
-use crate::mapper::Mapper;
+use crate::mapper::{ChrSource, Mapper};
 use registers::addr::AddrRegister;
 use registers::control::ControlRegister;
 use registers::mask::MaskRegister;
@@ -105,6 +105,33 @@ impl<'a> PPU<'a> {
         palette_index as usize
     }
 
+    pub fn peek_nametable_byte(&self, addr: u16) -> u8 {
+        self.mapper
+            .peek_nametable(addr, &self.vram)
+            .unwrap_or_else(|| self.vram[self.mirror_vram_addr(addr) as usize])
+    }
+
+    fn nametable_base_addr(table_index: usize) -> u16 {
+        0x2000 + ((table_index & 0x03) * 0x400) as u16
+    }
+
+    pub fn read_nametable_entry(&self, table_index: usize, tile_column: usize, tile_row: usize) -> u8 {
+        let base = Self::nametable_base_addr(table_index);
+        let offset = (tile_row * 32 + tile_column) as u16;
+        self.peek_nametable_byte(base + offset)
+    }
+
+    pub fn read_attribute_entry(
+        &self,
+        table_index: usize,
+        tile_column: usize,
+        tile_row: usize,
+    ) -> u8 {
+        let base = Self::nametable_base_addr(table_index);
+        let attr = 0x3C0 + (tile_row / 4 * 8 + tile_column / 4) as u16;
+        self.peek_nametable_byte(base + attr)
+    }
+
     fn increment_vram_addr(&mut self) {
         self.addr.increment(self.ctrl.vram_addr_increment());
     }
@@ -184,7 +211,11 @@ impl<'a> PPU<'a> {
             } else {
                 self.pending_scroll_descriptor
                     .map(|(_, _, _, origin)| origin)
-                    .or_else(|| self.scroll_segments.last().map(|segment| segment.screen_origin))
+                    .or_else(|| {
+                        self.scroll_segments
+                            .last()
+                            .map(|segment| segment.screen_origin)
+                    })
                     .unwrap_or(0)
             };
             self.pending_scroll_descriptor =
@@ -193,13 +224,10 @@ impl<'a> PPU<'a> {
     }
 
     fn reset_scroll_segments_for_new_frame(&mut self) {
-        let descriptor = self
-            .pending_scroll_descriptor
-            .take()
-            .unwrap_or_else(|| {
-                let (scroll_x, scroll_y, base_nametable) = self.current_scroll_descriptor();
-                (scroll_x, scroll_y, base_nametable, 0)
-            });
+        let descriptor = self.pending_scroll_descriptor.take().unwrap_or_else(|| {
+            let (scroll_x, scroll_y, base_nametable) = self.current_scroll_descriptor();
+            (scroll_x, scroll_y, base_nametable, 0)
+        });
         self.scroll_segments.clear();
         self.scroll_segments.push(ScrollSegment {
             start_scanline: 0,
@@ -269,7 +297,9 @@ impl<'a> PPU<'a> {
         match addr {
             0..=0x1fff => self.mapper.write_chr(addr, value),
             0x2000..=0x3eff => {
-                self.vram[self.mirror_vram_addr(addr) as usize] = value;
+                if !self.mapper.ppu_write_nametable(addr, value, &mut self.vram) {
+                    self.vram[self.mirror_vram_addr(addr) as usize] = value;
+                }
             }
             0x3f00..=0x3fff => {
                 let palette_index = PPU::mirror_palette_addr(addr);
@@ -288,12 +318,16 @@ impl<'a> PPU<'a> {
         match addr {
             0..=0x1fff => {
                 let result = self.internal_data_buf;
-                self.internal_data_buf = self.mapper.read_chr(addr);
+                self.internal_data_buf = self.mapper.read_chr(addr, ChrSource::Cpu);
                 result
             }
             0x2000..=0x3eff => {
                 let result = self.internal_data_buf;
-                self.internal_data_buf = self.vram[self.mirror_vram_addr(addr) as usize];
+                let value = self
+                    .mapper
+                    .ppu_read_nametable(addr, &self.vram)
+                    .unwrap_or_else(|| self.vram[self.mirror_vram_addr(addr) as usize]);
+                self.internal_data_buf = value;
                 result
             }
             0x3f00..=0x3fff => {

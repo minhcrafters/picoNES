@@ -1,5 +1,5 @@
 use crate::cart::Mirroring;
-use crate::mapper::Mapper;
+use crate::mapper::{ChrSource, Mapper};
 
 pub struct NromMapper {
     prg_rom: Vec<u8>,
@@ -49,7 +49,7 @@ impl Mapper for NromMapper {
         // NROM has no PRG RAM, ignore writes
     }
 
-    fn read_chr(&self, addr: u16) -> u8 {
+    fn read_chr(&self, addr: u16, _source: ChrSource) -> u8 {
         self.chr[addr as usize % self.chr.len()]
     }
 

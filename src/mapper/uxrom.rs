@@ -1,5 +1,5 @@
 use crate::cart::Mirroring;
-use crate::mapper::Mapper;
+use crate::mapper::{ChrSource, Mapper};
 
 const PRG_BANK_SIZE: usize = 0x4000;
 
@@ -82,7 +82,7 @@ impl Mapper for UxromMapper {
         }
     }
 
-    fn read_chr(&self, addr: u16) -> u8 {
+    fn read_chr(&self, addr: u16, _source: ChrSource) -> u8 {
         if self.chr.is_empty() {
             0
         } else {

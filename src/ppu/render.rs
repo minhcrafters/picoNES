@@ -1,5 +1,5 @@
 use crate::{
-    cart::Mirroring,
+    mapper::ChrSource,
     ppu::framebuffer::Framebuffer,
     ppu::palette,
     ppu::{PPU, ScrollSegment},
@@ -26,21 +26,21 @@ fn system_palette_color(ppu: &PPU, color_index: u8) -> (u8, u8, u8) {
     palette::SYSTEM_PALLETE[idx as usize]
 }
 
-fn nametable_slices<'a>(ppu: &'a PPU) -> [&'a [u8]; 4] {
-    let (first, rest) = ppu.vram.split_at(0x400);
-    let (second, _) = rest.split_at(0x400);
-    match ppu.mapper.mirroring() {
-        Mirroring::Vertical => [first, second, first, second],
-        Mirroring::Horizontal => [first, first, second, second],
-        Mirroring::SingleScreenLower => [first, first, first, first],
-        Mirroring::SingleScreenUpper => [second, second, second, second],
-        Mirroring::FourScreen => panic!("four screen mirroring is not supported"),
+fn bg_palette(ppu: &PPU, nametable_index: usize, tile_column: usize, tile_row: usize) -> [u8; 4] {
+    if let Some(override_idx) =
+        ppu.mapper
+            .background_palette_override(nametable_index, tile_column, tile_row)
+    {
+        let pallete_start: usize = 1 + (override_idx as usize) * 4;
+        return [
+            ppu.palette_table[0],
+            ppu.palette_table[pallete_start],
+            ppu.palette_table[pallete_start + 1],
+            ppu.palette_table[pallete_start + 2],
+        ];
     }
-}
 
-fn bg_palette(ppu: &PPU, attribute_table: &[u8], tile_column: usize, tile_row: usize) -> [u8; 4] {
-    let attr_table_idx = tile_row / 4 * 8 + tile_column / 4;
-    let attr_byte = attribute_table[attr_table_idx];
+    let attr_byte = ppu.read_attribute_entry(nametable_index, tile_column, tile_row);
 
     let pallet_idx = match (tile_column % 4 / 2, tile_row % 4 / 2) {
         (0, 0) => attr_byte & 0b11,
@@ -73,7 +73,7 @@ fn render_nametable(
     ppu: &PPU,
     frame: &mut Framebuffer,
     bg_priority: &mut [u8],
-    nametable: &[u8],
+    nametable_index: usize,
     viewport: Rect,
     shift_x: isize,
     shift_y: isize,
@@ -83,20 +83,29 @@ fn render_nametable(
         return;
     }
 
-    let attribute_table = &nametable[0x3c0..0x400];
-
     for i in 0..0x3c0 {
         let tile_column = i % 32;
         let tile_row = i / 32;
-        let tile_idx = nametable[i] as u16;
+        let tile_idx = ppu.read_nametable_entry(nametable_index, tile_column, tile_row) as u16;
         let mut tile = [0u8; 16];
-        for i in 0..16 {
-            tile[i] = ppu
-                .mapper
-                .read_chr(ppu.ctrl.bknd_pattern_addr() + tile_idx * 16 + i as u16);
+        if let Some(override_tile) = ppu.mapper.background_tile_override(
+            nametable_index,
+            tile_column,
+            tile_row,
+            tile_idx as u8,
+            ppu.ctrl.bknd_pattern_addr() + tile_idx * 16,
+        ) {
+            tile.copy_from_slice(&override_tile);
+        } else {
+            for i in 0..16 {
+                tile[i] = ppu.mapper.read_chr(
+                    ppu.ctrl.bknd_pattern_addr() + tile_idx * 16 + i as u16,
+                    ChrSource::Background,
+                );
+            }
         }
         let tile = &tile;
-        let palette = bg_palette(ppu, attribute_table, tile_column, tile_row);
+        let palette = bg_palette(ppu, nametable_index, tile_column, tile_row);
 
         for y in 0..=7 {
             let mut upper = tile[y];
@@ -181,13 +190,14 @@ fn render_sprites(ppu: &PPU, frame: &mut Framebuffer, bg_priority: &[u8]) {
             for half in 0..2 {
                 let addr = bank + (base_tile + half as u16) * 16;
                 for byte in 0..16 {
-                    tile[half * 16 + byte] = ppu.mapper.read_chr(addr + byte as u16);
+                    tile[half * 16 + byte] =
+                        ppu.mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
                 }
             }
         } else {
             let addr = ppu.ctrl.sprt_pattern_addr() + tile_idx * 16;
             for byte in 0..16 {
-                tile[byte as usize] = ppu.mapper.read_chr(addr + byte as u16);
+                tile[byte as usize] = ppu.mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
             }
         }
 
@@ -270,8 +280,6 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
         scroll_segments
     };
 
-    let name_tables = nametable_slices(ppu);
-
     if ppu.mask.show_background() {
         for (idx, segment) in segments.iter().enumerate() {
             let clip_start = segment.start_scanline.min(Framebuffer::HEIGHT);
@@ -288,10 +296,9 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
             let scroll_y = segment.scroll_y % Framebuffer::HEIGHT;
             let base_index = segment.base_nametable & 0x03;
 
-            let main_nametable = name_tables[base_index];
-            let horizontal_nametable = name_tables[(base_index ^ 0x01) & 0x03];
-            let vertical_nametable = name_tables[(base_index ^ 0x02) & 0x03];
-            let diagonal_nametable = name_tables[(base_index ^ 0x03) & 0x03];
+            let horizontal_index = (base_index ^ 0x01) & 0x03;
+            let vertical_index = (base_index ^ 0x02) & 0x03;
+            let diagonal_index = (base_index ^ 0x03) & 0x03;
 
             let base_shift_x = -(scroll_x as isize);
             let base_shift_y = -(scroll_y as isize);
@@ -301,7 +308,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
                 ppu,
                 frame,
                 &mut bg_priority,
-                main_nametable,
+                base_index,
                 Rect::new(scroll_x, scroll_y, 256, 240),
                 base_shift_x,
                 base_shift_y,
@@ -313,7 +320,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
                     ppu,
                     frame,
                     &mut bg_priority,
-                    horizontal_nametable,
+                    horizontal_index,
                     Rect::new(0, scroll_y, scroll_x, 240),
                     base_shift_x + Framebuffer::WIDTH as isize,
                     base_shift_y,
@@ -326,7 +333,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
                     ppu,
                     frame,
                     &mut bg_priority,
-                    vertical_nametable,
+                    vertical_index,
                     Rect::new(scroll_x, 0, 256, scroll_y),
                     base_shift_x,
                     base_shift_y + Framebuffer::HEIGHT as isize,
@@ -339,7 +346,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
                     ppu,
                     frame,
                     &mut bg_priority,
-                    diagonal_nametable,
+                    diagonal_index,
                     Rect::new(0, 0, scroll_x, scroll_y),
                     base_shift_x + Framebuffer::WIDTH as isize,
                     base_shift_y + Framebuffer::HEIGHT as isize,
