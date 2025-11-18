@@ -1,6 +1,6 @@
 use crate::mapper::{
     Mapper, cnrom::CnromMapper, mmc1::Mmc1Mapper, mmc3::Mmc3Mapper, mmc5::Mmc5Mapper,
-    nrom::NromMapper, uxrom::UxromMapper,
+    nrom::NromMapper, nsf::NsfMapper, uxrom::UxromMapper,
 };
 
 const NES_TAG: [u8; 4] = [0x4E, 0x45, 0x53, 0x1A];
@@ -147,6 +147,7 @@ impl Cart {
             3 => Box::new(CnromMapper::new(prg_rom, chr_rom, screen_mirroring.clone())),
             4 => Box::new(Mmc3Mapper::new(prg_rom, chr_rom, screen_mirroring.clone())),
             5 => Box::new(Mmc5Mapper::new(prg_rom, chr_rom, screen_mirroring.clone())),
+            31 => Box::new(NsfMapper::new(prg_rom, chr_rom, screen_mirroring.clone())),
             _ => return Err(format!("Mapper {} not supported", mapper)),
         };
 

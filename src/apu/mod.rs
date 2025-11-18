@@ -146,12 +146,14 @@ impl APU {
     pub fn clock(&mut self) -> Option<u16> {
         let dma_request = self.dmc.clock_timer();
 
+        self.triangle.clock_timer();
+
         if self.cycle_parity {
             self.pulse1.clock_timer();
             self.pulse2.clock_timer();
             self.noise.clock_timer();
         }
-        self.triangle.clock_timer();
+
         self.cycle_parity = !self.cycle_parity;
 
         let frame_event = self.frame_counter.clock();
@@ -163,6 +165,7 @@ impl APU {
         }
 
         self.sample_timer += 1.0;
+
         while self.sample_timer >= self.sample_interval {
             self.sample_timer -= self.sample_interval;
             let sample = self.mix_output();
@@ -180,6 +183,8 @@ impl APU {
     }
 
     fn clock_half_frame(&mut self) {
+        self.clock_quarter_frame();
+
         self.pulse1.clock_half_frame();
         self.pulse2.clock_half_frame();
         self.triangle.clock_half_frame();
@@ -314,7 +319,6 @@ impl FrameCounter {
     }
 
     fn clock(&mut self) -> FrameEvent {
-        self.cycle = self.cycle.wrapping_add(1);
         let mut event = FrameEvent::default();
 
         let (sequence, period) = match self.mode {
@@ -339,6 +343,8 @@ impl FrameCounter {
         if self.cycle >= period {
             self.cycle = 0;
         }
+
+        self.cycle = self.cycle.wrapping_add(1);
 
         event
     }

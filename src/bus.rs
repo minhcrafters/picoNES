@@ -25,7 +25,7 @@ impl<'a> Bus<'a> {
     where
         F: FnMut(&PPU, &mut Joypad, &mut Joypad) + 'static,
     {
-        let mapper_ptr: *mut dyn Mapper = cart.mapper.as_mut() as *mut dyn Mapper;
+        let mapper_ptr: *mut dyn Mapper = cart.mapper.as_mut();
 
         // Create a &mut dyn Mapper for PPU::new using unsafe from the raw pointer
         let ppu = unsafe {
@@ -69,7 +69,7 @@ impl<'a> Memory for Bus<'a> {
             0x4014 => 0,
             0x4015 => self.apu.read_status(),
             0x4016 => self.joypad1.read(),
-            0x4017 => 0, // self.joypad2.read(),
+            0x4017 => 0, // self.joypad2.read(), // TODO: fix smb not liking having a 2nd controller
             0x4018..=DISABLED_APU_IO_END => 0,
             CARTRIDGE_SPACE_START..=0xFFFF => self.mapper.read_prg(addr),
         }
@@ -123,14 +123,15 @@ impl<'a> Memory for Bus<'a> {
 
     fn tick(&mut self, cycles: u8) {
         self.cycles += cycles as usize;
+
+        let nmi_before = self.ppu.nmi_interrupt.is_some();
+        self.ppu.tick(cycles * 3);
         for _ in 0..cycles {
             if let Some(addr) = self.apu.clock() {
                 let value = self.read(addr);
                 self.apu.provide_dmc_sample(value);
             }
         }
-        let nmi_before = self.ppu.nmi_interrupt.is_some();
-        self.ppu.tick(cycles * 3);
         let nmi_after = self.ppu.nmi_interrupt.is_some();
 
         if !nmi_before && nmi_after {
