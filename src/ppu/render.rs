@@ -297,21 +297,21 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
             if clip_start >= clip_end {
                 continue;
             }
-            
 
-            // bro why doesn't it scroll??
+            // Fix scroll calculation for proper camera following
             let scroll_x_full = segment.scroll_x;
             let scroll_y_full = segment.scroll_y;
 
             let base_nametable = segment.base_nametable & 0x03;
 
+            // Check if we've scrolled beyond nametable boundaries (NES PPU scrolling)
             let h_offset = if scroll_x_full >= 256 { 1 } else { 0 };
-            let v_offset = if scroll_y_full >= 240 { 2 } else { 0 };
+            let v_offset = if scroll_y_full >= 240 { 1 } else { 0 };
 
-            let active_base = (base_nametable ^ h_offset ^ v_offset) & 0x03;
-            let horizontal_index = (base_nametable ^ 0x01 ^ h_offset ^ v_offset) & 0x03;
-            let vertical_index = (base_nametable ^ 0x02 ^ h_offset ^ v_offset) & 0x03;
-            let diagonal_index = (base_nametable ^ 0x03 ^ h_offset ^ v_offset) & 0x03;
+            let active_base = (base_nametable ^ h_offset ^ (v_offset << 1)) & 0x03;
+            let horizontal_index = (base_nametable ^ 0x01 ^ h_offset ^ (v_offset << 1)) & 0x03;
+            let vertical_index = (base_nametable ^ 0x02 ^ h_offset ^ (v_offset << 1)) & 0x03;
+            let diagonal_index = (base_nametable ^ 0x03 ^ h_offset ^ (v_offset << 1)) & 0x03;
 
             let scroll_x = scroll_x_full % 256;
             let scroll_y = scroll_y_full % 240;
