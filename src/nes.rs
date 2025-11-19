@@ -8,7 +8,7 @@ pub struct ClockResult {
 pub struct Nes {
     pub cpu: CPU,
     pub bus: Bus,
-    pub system_clock_counter: u64,
+    pub system_clock: u64,
 }
 
 impl Nes {
@@ -16,7 +16,7 @@ impl Nes {
         Nes {
             cpu: CPU::new(),
             bus: Bus::new(cart, apu),
-            system_clock_counter: 0,
+            system_clock: 0,
         }
     }
 
@@ -28,7 +28,7 @@ impl Nes {
         let frame_complete = self.bus.clock_ppu();
         let mut instruction_complete = false;
 
-        if self.system_clock_counter % 3 == 0 {
+        if self.system_clock % 3 == 0 {
             instruction_complete = self.cpu.clock(&mut self.bus);
             self.bus.clock_apu();
         }
@@ -41,7 +41,7 @@ impl Nes {
             self.cpu.irq(&mut self.bus);
         }
 
-        self.system_clock_counter = self.system_clock_counter.wrapping_add(1);
+        self.system_clock = self.system_clock.wrapping_add(1);
 
         ClockResult {
             frame_complete,

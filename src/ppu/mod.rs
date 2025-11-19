@@ -147,8 +147,8 @@ impl PPU {
     }
 
     fn current_scroll_descriptor(&self) -> (usize, usize, usize) {
-        let scroll_x = self.scroll.scroll_x();
-        let scroll_y = self.scroll.scroll_y();
+        let scroll_x = self.scroll.scroll_x_full();
+        let scroll_y = self.scroll.scroll_y_full();
         let base_nametable = self.scroll.base_nametable();
         (scroll_x, scroll_y, base_nametable)
     }

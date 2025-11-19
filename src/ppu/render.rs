@@ -197,8 +197,7 @@ fn render_sprites(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer, b
             for half in 0..2 {
                 let addr = bank + (base_tile + half as u16) * 16;
                 for byte in 0..16 {
-                        tile[half * 16 + byte] =
-                            mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
+                    tile[half * 16 + byte] = mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
                 }
             }
         } else {
@@ -298,14 +297,24 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
             if clip_start >= clip_end {
                 continue;
             }
+            
 
-            let scroll_x = segment.scroll_x % Framebuffer::WIDTH;
-            let scroll_y = segment.scroll_y % Framebuffer::HEIGHT;
-            let base_index = segment.base_nametable & 0x03;
+            // bro why doesn't it scroll??
+            let scroll_x_full = segment.scroll_x;
+            let scroll_y_full = segment.scroll_y;
 
-            let horizontal_index = (base_index ^ 0x01) & 0x03;
-            let vertical_index = (base_index ^ 0x02) & 0x03;
-            let diagonal_index = (base_index ^ 0x03) & 0x03;
+            let base_nametable = segment.base_nametable & 0x03;
+
+            let h_offset = if scroll_x_full >= 256 { 1 } else { 0 };
+            let v_offset = if scroll_y_full >= 240 { 2 } else { 0 };
+
+            let active_base = (base_nametable ^ h_offset ^ v_offset) & 0x03;
+            let horizontal_index = (base_nametable ^ 0x01 ^ h_offset ^ v_offset) & 0x03;
+            let vertical_index = (base_nametable ^ 0x02 ^ h_offset ^ v_offset) & 0x03;
+            let diagonal_index = (base_nametable ^ 0x03 ^ h_offset ^ v_offset) & 0x03;
+
+            let scroll_x = scroll_x_full % 256;
+            let scroll_y = scroll_y_full % 240;
 
             let base_shift_x = -(scroll_x as isize);
             let base_shift_y = -(scroll_y as isize);
@@ -316,7 +325,7 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
                 mapper,
                 frame,
                 &mut bg_priority,
-                base_index,
+                active_base,
                 Rect::new(scroll_x, scroll_y, 256, 240),
                 base_shift_x,
                 base_shift_y,

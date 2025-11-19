@@ -70,12 +70,22 @@ impl ScrollRegister {
         self.v = (self.v & !NAMETABLE_MASK) | nametable_masked;
     }
 
+    /// Returns the full 9-bit scroll X coordinate (can be 0-511 to represent wrapping across nametables)
+    pub fn scroll_x_full(&self) -> usize {
+        (self.coarse_x() as usize) * 8 + self.fine_x as usize
+    }
+
+    /// Returns the full scroll Y coordinate including vertical wrapping
+    pub fn scroll_y_full(&self) -> usize {
+        ((self.coarse_y() as usize) * 8) + self.fine_y() as usize
+    }
+
     pub fn scroll_x(&self) -> usize {
-        ((self.coarse_x() as usize) * 8 + self.fine_x as usize) % 256
+        self.scroll_x_full() % 256
     }
 
     pub fn scroll_y(&self) -> usize {
-        (((self.coarse_y() as usize) % 30) * 8 + self.fine_y() as usize) % 240
+        self.scroll_y_full() % 240
     }
 
     pub fn base_nametable(&self) -> usize {
