@@ -1,5 +1,15 @@
+use error_iter::ErrorIter as _;
+use log::error;
+use pixels::wgpu::{PowerPreference, RequestAdapterOptions};
+use pixels::{Error, PixelsBuilder, SurfaceTexture};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use winit::dpi::LogicalSize;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::keyboard::KeyCode;
+use winit::window::WindowBuilder;
+use winit_input_helper::WinitInputHelper;
 
 use clap::Parser;
 use pico::apu::APU;
@@ -9,32 +19,25 @@ use pico::movie::FM2Movie;
 use pico::nes::{ClockResult, Nes};
 use pico::ppu::framebuffer::Framebuffer;
 use pico::trace::trace;
-use sdl2::audio::{AudioCallback, AudioSpecDesired};
-use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::PixelFormatEnum;
 
-struct ApuAudioCallback {
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+const WIDTH: u32 = 256;
+
+struct AudioCallbackImpl {
+    audio_buffer: Arc<Mutex<VecDeque<f32>>>,
 }
 
-impl AudioCallback for ApuAudioCallback {
+impl sdl2::audio::AudioCallback for AudioCallbackImpl {
     type Channel = f32;
 
     fn callback(&mut self, out: &mut [f32]) {
-        if let Ok(mut buf) = self.buffer.lock() {
-            for sample in out.iter_mut() {
-                if let Some(value) = buf.pop_front() {
-                    *sample = value;
-                } else {
-                    *sample = 0.0;
-                }
-            }
-        } else {
-            out.fill(0.0);
+        let mut buffer = self.audio_buffer.lock().unwrap();
+        for sample in out.iter_mut() {
+            *sample = buffer.pop_front().unwrap_or(0.0);
         }
     }
 }
+const HEIGHT: u32 = 240;
+const SCALE: u32 = 3;
 
 #[derive(Parser)]
 struct CliArgs {
@@ -45,64 +48,85 @@ struct CliArgs {
     debug: bool,
 }
 
-fn main() {
+fn main() -> Result<(), Error> {
     env_logger::init();
     let args = CliArgs::parse();
+
+    let sdl_ctx = sdl2::init().unwrap();
+    let audio_subsystem = sdl_ctx.audio().unwrap();
 
     let bytes = std::fs::read(&args.rom_file).expect("failed to read ROM");
     let cart = Cart::new(&bytes).expect("failed to parse cartridge");
 
-    let sdl = sdl2::init().expect("failed to init SDL");
-    let video = sdl.video().expect("failed to init video");
-    let audio = sdl.audio().expect("failed to init audio");
-
-    let window = video
-        .window("pico", (256 * 3) as u32, (240 * 3) as u32)
-        .position_centered()
-        .build()
-        .expect("failed to create window");
-    let mut canvas = window.into_canvas().present_vsync().build().unwrap();
-    canvas.set_scale(3.0, 3.0).unwrap();
-
-    let creator = canvas.texture_creator();
-    let mut texture = creator
-        .create_texture_streaming(PixelFormatEnum::RGB24, 256, 240)
-        .unwrap();
-
-    let mut event_pump = sdl.event_pump().unwrap();
-
-    let audio_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(96_000)));
-    let desired_spec = AudioSpecDesired {
-        freq: Some(48_000),
-        channels: Some(1),
-        samples: Some(1024),
+    let event_loop = EventLoop::new().unwrap();
+    let mut input = WinitInputHelper::new();
+    let window = {
+        let size = LogicalSize::new((WIDTH * SCALE) as f64, (HEIGHT * SCALE) as f64);
+        WindowBuilder::new()
+            .with_title("pico")
+            .with_inner_size(size)
+            .with_min_inner_size(size)
+            .build(&event_loop)
+            .unwrap()
     };
 
-    let buffer_for_device = audio_buffer.clone();
-    let audio_device = audio
-        .open_playback(None, &desired_spec, move |_spec| ApuAudioCallback {
-            buffer: buffer_for_device,
-        })
-        .unwrap();
-    audio_device.resume();
-    let sample_rate = audio_device.spec().freq.max(1) as u32;
+    let mut pixels = {
+        let window_size = window.inner_size();
+        let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
+        PixelsBuilder::new(WIDTH, HEIGHT, surface_texture)
+            .request_adapter_options(RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            })
+            .build()?
+    };
 
+    // Initialize emulator
+    let sample_rate = 48000;
+
+    let audio_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(
+        sample_rate as usize * 2,
+    )));
+
+    let apu = APU::new(sample_rate, audio_buffer.clone());
+
+    let audio_device = audio_subsystem
+        .open_playback(
+            None,
+            &sdl2::audio::AudioSpecDesired {
+                freq: Some(sample_rate as i32),
+                channels: Some(1),
+                samples: None,
+            },
+            |spec| {
+                assert_eq!(spec.freq, sample_rate as i32);
+                assert_eq!(spec.channels, 1);
+                AudioCallbackImpl {
+                    audio_buffer: audio_buffer.clone(),
+                }
+            },
+        )
+        .unwrap();
+
+    audio_device.resume();
+
+    let mut nes = Nes::new(cart, apu);
+    nes.reset();
+
+    // Setup input mapping
     let mut key_map = HashMap::new();
-    key_map.insert(Keycode::Down, JoypadButton::DOWN);
-    key_map.insert(Keycode::Up, JoypadButton::UP);
-    key_map.insert(Keycode::Right, JoypadButton::RIGHT);
-    key_map.insert(Keycode::Left, JoypadButton::LEFT);
-    key_map.insert(Keycode::Space, JoypadButton::SELECT);
-    key_map.insert(Keycode::Return, JoypadButton::START);
-    key_map.insert(Keycode::X, JoypadButton::BUTTON_A);
-    key_map.insert(Keycode::Z, JoypadButton::BUTTON_B);
+    key_map.insert(KeyCode::ArrowDown, JoypadButton::DOWN);
+    key_map.insert(KeyCode::ArrowUp, JoypadButton::UP);
+    key_map.insert(KeyCode::ArrowRight, JoypadButton::RIGHT);
+    key_map.insert(KeyCode::ArrowLeft, JoypadButton::LEFT);
+    key_map.insert(KeyCode::Space, JoypadButton::SELECT);
+    key_map.insert(KeyCode::Enter, JoypadButton::START);
+    key_map.insert(KeyCode::KeyX, JoypadButton::BUTTON_A);
+    key_map.insert(KeyCode::KeyZ, JoypadButton::BUTTON_B);
 
     let mut button_states: HashMap<JoypadButton, bool> =
         key_map.values().copied().map(|btn| (btn, false)).collect();
-
-    let apu = APU::new(sample_rate, audio_buffer.clone());
-    let mut nes = Nes::new(cart, apu);
-    nes.reset();
 
     let mut movie = args
         .movie_file
@@ -111,53 +135,83 @@ fn main() {
     let mut frame_count: usize = 0;
     let mut framebuffer = Framebuffer::new();
 
-    'emulation: loop {
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'emulation,
-                Event::KeyDown {
-                    keycode: Some(Keycode::R),
-                    ..
-                } => {
-                    nes.reset();
-                    frame_count = 0;
+    let res = event_loop.run(|event, elwt| {
+        // Draw the current frame
+        if let Event::WindowEvent {
+            event: WindowEvent::RedrawRequested,
+            ..
+        } = event
+        {
+            apply_inputs(&mut nes, &mut movie, frame_count, &button_states);
+            run_frame(&mut nes, args.debug);
+            frame_count = frame_count.wrapping_add(1);
+
+            framebuffer.data.fill(0);
+            nes.bus.render_frame(&mut framebuffer);
+
+            // Convert RGB24 framebuffer to RGBA8 for pixels
+            let frame = pixels.frame_mut();
+            for (i, chunk) in framebuffer.data.chunks(3).enumerate() {
+                if i * 4 + 3 < frame.len() {
+                    frame[i * 4] = chunk[0];
+                    frame[i * 4 + 1] = chunk[1];
+                    frame[i * 4 + 2] = chunk[2];
+                    frame[i * 4 + 3] = 0xff;
                 }
-                Event::KeyDown {
-                    keycode: Some(kc), ..
-                } => {
-                    if let Some(btn) = key_map.get(&kc) {
-                        button_states.insert(*btn, true);
-                    }
-                }
-                Event::KeyUp {
-                    keycode: Some(kc), ..
-                } => {
-                    if let Some(btn) = key_map.get(&kc) {
-                        button_states.insert(*btn, false);
-                    }
-                }
-                _ => {}
+            }
+
+            if let Err(err) = pixels.render() {
+                log_error("pixels.render", err);
+                elwt.exit();
+                return;
             }
         }
 
-        apply_inputs(&mut nes, &mut movie, frame_count, &button_states);
+        // Handle input events
+        if input.update(&event) {
+            // Close events
+            if input.key_pressed(KeyCode::Escape) || input.close_requested() {
+                elwt.exit();
+                return;
+            }
 
-        run_frame(&mut nes, args.debug);
-        
-        frame_count = frame_count.wrapping_add(1);
+            // Reset emulator
+            if input.key_pressed(KeyCode::KeyR) {
+                nes.reset();
+                frame_count = 0;
+            }
 
-        framebuffer.data.fill(0);
-        nes.bus.render_frame(&mut framebuffer);
-        texture
-            .update(None, &framebuffer.data, 256 * 3)
-            .expect("texture upload failed");
-        canvas.clear();
-        canvas.copy(&texture, None, None).unwrap();
-        canvas.present();
+            // Handle key presses for button mapping
+            for (key, btn) in &key_map {
+                if input.key_pressed(*key) {
+                    button_states.insert(*btn, true);
+                }
+                if input.key_released(*key) {
+                    button_states.insert(*btn, false);
+                }
+            }
+
+            // Resize the window
+            if let Some(size) = input.window_resized() {
+                if let Err(err) = pixels.resize_surface(size.width, size.height) {
+                    log_error("pixels.resize_surface", err);
+                    elwt.exit();
+                    return;
+                }
+            }
+
+            // Request a redraw
+            window.request_redraw();
+        }
+    });
+
+    res.map_err(|e| Error::UserDefined(Box::new(e)))
+}
+
+fn log_error<E: std::error::Error + 'static>(method_name: &str, err: E) {
+    error!("{method_name}() failed: {err}");
+    for source in err.sources().skip(1) {
+        error!("  Caused by: {source}");
     }
 }
 

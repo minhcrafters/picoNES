@@ -31,7 +31,7 @@ impl TriangleChannel {
             linear_reload_flag: false,
             linear_counter_initial: 0,
             linear_counter_current: 0,
-            sequence_counter: 0,  // Start at 0 to avoid clicks
+            sequence_counter: 0,
             period_initial: 0,
             period_current: 0,
         }

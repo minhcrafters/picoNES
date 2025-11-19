@@ -95,16 +95,16 @@ impl DmcChannel {
     }
 
     pub fn clock(&mut self) -> Option<u16> {
-        if self.period_current == 0 {
+        if self.period_current > 0 {
+            self.period_current -= 1;
+        } else {
             self.period_current = self.period_initial;
             self.update_output_unit();
-        } else {
-            self.period_current = self.period_current.saturating_sub(1);
         }
 
         if !self.sample_fetch_pending && self.sample_buffer.is_none() && self.bytes_remaining > 0 {
             self.sample_fetch_pending = true;
-            Some(0x8000u16 | (self.current_address & 0x7FFF))
+            Some(0x8000 | (self.current_address & 0x7FFF))
         } else {
             None
         }

@@ -530,7 +530,7 @@ pub mod test {
 
     #[test]
     fn test_vram_single_screen_lower_mirror() {
-        let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::SingleScreenLower);
+        let mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::SingleScreenLower);
         let ppu = PPU::empty();
 
         assert_eq!(ppu.mirror_vram_addr(&mapper, 0x2000), 0);
@@ -543,7 +543,7 @@ pub mod test {
 
     #[test]
     fn test_vram_single_screen_upper_mirror() {
-        let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::SingleScreenUpper);
+        let mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::SingleScreenUpper);
         let ppu = PPU::empty();
 
         assert_eq!(ppu.mirror_vram_addr(&mapper, 0x2000), 0x0400);
@@ -556,7 +556,6 @@ pub mod test {
 
     #[test]
     fn test_scroll_segments_capture_mid_frame_changes() {
-        let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::Horizontal);
         let mut ppu = PPU::empty();
 
         assert_eq!(ppu.scroll_segments().len(), 1);
@@ -573,7 +572,6 @@ pub mod test {
 
     #[test]
     fn test_scroll_writes_during_vblank_apply_next_frame() {
-        let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::Horizontal);
         let mut ppu = PPU::empty();
 
         assert_eq!(ppu.scroll_segments()[0].scroll_y, 0);
@@ -675,7 +673,6 @@ pub mod test {
 
     #[test]
     fn test_read_status_resets_vblank() {
-        let mut mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
         let mut ppu = PPU::empty();
         ppu.status.set_vblank_status(true);
 
@@ -687,7 +684,6 @@ pub mod test {
 
     #[test]
     fn test_oam_read_write() {
-        let mut mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
         let mut ppu = PPU::empty();
         ppu.write_to_oam_addr(0x10);
         ppu.write_to_oam_data(0x66);
@@ -702,7 +698,6 @@ pub mod test {
 
     #[test]
     fn test_oam_dma() {
-        let mut mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
         let mut ppu = PPU::empty();
 
         let mut data = [0x66; 256];
