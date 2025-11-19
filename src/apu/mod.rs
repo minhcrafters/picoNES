@@ -416,11 +416,10 @@ impl APU {
             self.dmc.output()
         };
 
-        let tnd_index = full_tnd_index(
-            (triangle_output as usize).min(15),
-            (noise_output as usize).min(15),
-            (dmc_output as usize).min(127),
-        );
+        let tnd_index = (triangle_output as usize).min(15) * 3
+            + (noise_output as usize).min(15) * 2
+            + (dmc_output as usize).min(127);
+
         let tnd_output = self.tnd_table[tnd_index];
 
         let mixed = (pulse_output - 0.5) + (tnd_output - 0.5);
@@ -523,10 +522,6 @@ fn generate_pulse_table() -> Vec<f32> {
         pulse_table[n] = 95.52 / (8128.0 / (n as f32) + 100.0);
     }
     pulse_table
-}
-
-fn full_tnd_index(t: usize, n: usize, d: usize) -> usize {
-    3 * t + 2 * n + d
 }
 
 fn generate_tnd_table() -> Vec<f32> {
