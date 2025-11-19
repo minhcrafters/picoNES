@@ -1,112 +1,138 @@
-use super::{LENGTH_TABLE, channel::Channel};
+use crate::apu::buffer::RingBuffer;
+use crate::apu::channel::{Channel, PlaybackRate, Timbre, Volume};
+use crate::apu::{CPU_CLOCK_NTSC, LengthCounter};
 
-const TRIANGLE_SEQUENCE: [u8; 32] = [
-    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-    13, 14, 15,
-];
-
-#[derive(Debug)]
 pub struct TriangleChannel {
-    enabled: bool,
-    control_flag: bool,
-    linear_reload_value: u8,
-    linear_counter: u8,
-    linear_reload_flag: bool,
-    timer_period: u16,
-    timer_value: u16,
-    length_counter: u8,
-    sequence_index: usize,
+    pub debug_disable: bool,
+    pub output_buffer: RingBuffer,
+    pub edge_buffer: RingBuffer,
+    pub last_edge: bool,
+    pub length_counter: LengthCounter,
+
+    pub control_flag: bool,
+    pub linear_reload_flag: bool,
+    pub linear_counter_initial: u8,
+    pub linear_counter_current: u8,
+
+    pub sequence_counter: u8,
+    pub period_initial: u16,
+    pub period_current: u16,
 }
 
 impl TriangleChannel {
-    pub fn new() -> Self {
-        Self {
-            enabled: false,
+    pub fn new() -> TriangleChannel {
+        TriangleChannel {
+            debug_disable: false,
+            output_buffer: RingBuffer::new(32768),
+            edge_buffer: RingBuffer::new(32768),
+            last_edge: false,
+            length_counter: LengthCounter::new(),
             control_flag: false,
-            linear_reload_value: 0,
-            linear_counter: 0,
             linear_reload_flag: false,
-            timer_period: 0,
-            timer_value: 0,
-            length_counter: 0,
-            sequence_index: 0,
-        }
-    }
-}
-
-impl Channel for TriangleChannel {
-    fn write_register(&mut self, register: usize, value: u8) {
-        match register {
-            0 => {
-                self.control_flag = (value & 0x80) != 0;
-                self.linear_reload_value = value & 0x7F;
-                self.linear_reload_flag = true;
-            }
-            1 => {}
-            2 => {
-                self.timer_period = (self.timer_period & 0xFF00) | value as u16;
-            }
-            3 => {
-                self.timer_period = (self.timer_period & 0x00FF) | (((value & 0x07) as u16) << 8);
-                self.timer_value = self.timer_period;
-                self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
-                self.linear_reload_flag = true;
-                self.sequence_index = 0;
-            }
-            _ => {}
+            linear_counter_initial: 0,
+            linear_counter_current: 0,
+            sequence_counter: 0,  // Start at 0 to avoid clicks
+            period_initial: 0,
+            period_current: 0,
         }
     }
 
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.length_counter = 0;
-        }
-    }
-
-    fn clock_timer(&mut self) -> Option<u16> {
-        if self.timer_period < 2 || self.timer_period > 0x07FF {
-            return None;
-        }
-
-        if self.timer_value == 0 {
-            self.timer_value = self.timer_period;
-            if self.length_counter > 0 && self.linear_counter > 0 {
-                self.sequence_index = (self.sequence_index + 1) % TRIANGLE_SEQUENCE.len();
-            }
-        } else {
-            self.timer_value -= 1;
-        }
-
-        None
-    }
-
-    fn clock_quarter_frame(&mut self) {
+    pub fn update_linear_counter(&mut self) {
         if self.linear_reload_flag {
-            self.linear_counter = self.linear_reload_value;
-        } else if self.linear_counter > 0 {
-            self.linear_counter -= 1;
+            self.linear_counter_current = self.linear_counter_initial;
+        } else if self.linear_counter_current > 0 {
+            self.linear_counter_current -= 1;
         }
-
         if !self.control_flag {
             self.linear_reload_flag = false;
         }
     }
 
-    fn clock_half_frame(&mut self) {
-        if self.length_counter > 0 && !self.control_flag {
-            self.length_counter -= 1;
+    pub fn clock(&mut self) {
+        if self.linear_counter_current != 0 && self.length_counter.length > 0 {
+            if self.period_current == 0 {
+                self.period_current = self.period_initial;
+                if self.sequence_counter >= 31 {
+                    self.sequence_counter = 0;
+                    self.last_edge = true;
+                } else {
+                    self.sequence_counter += 1;
+                }
+            } else {
+                self.period_current -= 1;
+            }
         }
     }
 
-    fn output(&self) -> f32 {
-        if !self.enabled || self.length_counter == 0 || self.linear_counter == 0 {
-            return 0.0;
+    pub fn output(&self) -> i16 {
+        if self.period_initial <= 2 {
+            7
+        } else {
+            let triangle_sequence = [
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15, 14, 13, 12, 11, 10, 9, 8,
+                7, 6, 5, 4, 3, 2, 1, 0,
+            ];
+            triangle_sequence[self.sequence_counter as usize]
         }
-        TRIANGLE_SEQUENCE[self.sequence_index] as f32
+    }
+}
+
+impl Channel for TriangleChannel {
+    fn sample_buffer(&self) -> &RingBuffer {
+        &self.output_buffer
     }
 
-    fn active(&self) -> bool {
-        self.length_counter > 0
+    fn edge_buffer(&self) -> &RingBuffer {
+        &self.edge_buffer
+    }
+
+    fn record_current_output(&mut self) {
+        self.output_buffer
+            .push((self.output() as f32 * -4.0) as i16);
+        self.edge_buffer.push(self.last_edge as i16);
+        self.last_edge = false;
+    }
+
+    fn min_sample(&self) -> i16 {
+        -60
+    }
+
+    fn max_sample(&self) -> i16 {
+        60
+    }
+
+    fn muted(&self) -> bool {
+        self.debug_disable
+    }
+
+    fn mute(&mut self) {
+        self.debug_disable = true;
+    }
+
+    fn unmute(&mut self) {
+        self.debug_disable = false;
+    }
+
+    fn playing(&self) -> bool {
+        self.length_counter.length > 0
+            && self.linear_counter_current != 0
+            && self.period_initial > 2
+    }
+
+    fn rate(&self) -> PlaybackRate {
+        let frequency = CPU_CLOCK_NTSC as f32 / (32.0 * (self.period_initial as f32 + 1.0));
+        PlaybackRate::SampleRate { frequency }
+    }
+
+    fn volume(&self) -> Option<Volume> {
+        None
+    }
+
+    fn timbre(&self) -> Option<Timbre> {
+        None
+    }
+
+    fn amplitude(&self) -> f32 {
+        if self.playing() { 0.55 } else { 0.0 }
     }
 }

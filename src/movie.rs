@@ -246,7 +246,9 @@ fn parse_header(header_text: &str) -> Result<MovieHeader, String> {
         .get("rerecordCount")
         .and_then(|v| v.parse::<i32>().ok());
 
-    let pal_flag = pairs.get("palFlag").map(|v| *v == "1").unwrap_or(false);
+    // Emulator is NTSC-only; ignore PAL flags in movie headers to avoid
+    // attempting PAL-specific timing or playback modes.
+    let pal_flag = false;
 
     let new_ppu = pairs.get("NewPPU").map(|v| *v == "1").unwrap_or(false);
 

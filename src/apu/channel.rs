@@ -1,53 +1,60 @@
-use std::fmt::Debug;
+use crate::apu::buffer::RingBuffer;
 
-/// Common interface implemented by all five NES APU channels.
-///
-/// Each channel handles its own register decoding and internal state
-/// (envelope, sweep, timers, etc.). The APU core clocks the channels
-/// and mixes their raw outputs into an audio sample stream.
-pub trait Channel: Debug {
-    /// Write to one of the channel specific registers.
-    ///
-    /// The register index is zero-based relative to the first register
-    /// of that channel (e.g. pulse 1 register 0 corresponds to $4000).
-    fn write_register(&mut self, register: usize, value: u8);
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub enum PlaybackRate {
+    Unknown,
+    SampleRate { frequency: f32 },
+}
 
-    /// Enable or disable the channel. Disabling immediately silences
-    /// the channel and clears any length counter state.
-    fn set_enabled(&mut self, enabled: bool);
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub enum Volume {
+    VolumeIndex { index: usize, max: usize },
+    Linear { level: f32 },
+}
 
-    /// A single APU timer tick.
-    ///
-    /// Channels that rely on DMA (only DMC) may request a sample fetch
-    /// by returning the CPU address that needs to be read. All other
-    /// channels simply return `None`.
-    fn clock_timer(&mut self) -> Option<u16>;
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub enum Timbre {
+    DutyIndex { index: usize, max: usize },
+}
 
-    /// Clock operations tied to the quarter-frame sequencer.
-    fn clock_quarter_frame(&mut self);
+/// Shared debug/inspection interface exposed by every APU channel.
+#[allow(dead_code)]
+pub trait Channel {
+    fn sample_buffer(&self) -> &RingBuffer;
+    fn edge_buffer(&self) -> &RingBuffer;
 
-    /// Clock operations tied to the half-frame sequencer.
-    fn clock_half_frame(&mut self);
+    fn record_current_output(&mut self);
 
-    /// Current raw output level of the channel as defined on
-    /// https://www.nesdev.org/wiki/APU_Mixer. Pulse/Noise outputs are
-    /// 0-15, triangle is 0-15, and DMC is 0-127.
-    fn output(&self) -> f32;
+    fn min_sample(&self) -> i16;
+    fn max_sample(&self) -> i16;
 
-    /// Whether the channel is still active (e.g. has a running length
-    /// counter or buffered DMC bytes). Used by $4015 reads.
-    fn active(&self) -> bool;
+    fn muted(&self) -> bool;
+    fn mute(&mut self);
+    fn unmute(&mut self);
 
-    /// Returns `true` when the channel has raised an IRQ (frame counter
-    /// and DMC). The default implementation covers the channels that
-    /// never assert IRQs.
-    fn irq_flag(&self) -> bool {
-        false
+    fn playing(&self) -> bool {
+        return false;
     }
-
-    /// Clear the IRQ latch if the channel supports IRQs.
-    fn clear_irq(&mut self) {}
-
-    /// Provide a fetched sample byte. Only used by DMC.
-    fn provide_sample(&mut self, _value: u8) {}
+    fn rate(&self) -> PlaybackRate {
+        return PlaybackRate::SampleRate { frequency: 0.0 };
+    }
+    fn volume(&self) -> Option<Volume> {
+        return None;
+    }
+    fn timbre(&self) -> Option<Timbre> {
+        return None;
+    }
+    fn amplitude(&self) -> f32 {
+        if !self.playing() {
+            return 0.0;
+        }
+        match self.volume() {
+            Some(Volume::VolumeIndex { index, max }) => return index as f32 / (max + 1) as f32,
+            Some(Volume::Linear { level }) => return level,
+            None => return 1.0,
+        }
+    }
 }

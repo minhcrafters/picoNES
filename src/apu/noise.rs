@@ -1,98 +1,131 @@
-use super::{channel::Channel, envelope::Envelope, LENGTH_TABLE};
+use crate::apu::LengthCounter;
+use crate::apu::buffer::RingBuffer;
+use crate::apu::channel::{Channel, PlaybackRate, Timbre, Volume};
+use crate::apu::envelope::Envelope;
 
-const NOISE_PERIOD_TABLE: [u16; 16] = [
+pub const NOISE_PERIOD_TABLE: [u16; 16] = [
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
 ];
 
-#[derive(Debug)]
 pub struct NoiseChannel {
-    enabled: bool,
-    length_counter: u8,
-    length_halt: bool,
-    envelope: Envelope,
-    mode_short: bool,
-    shift_register: u16,
-    timer_period: u16,
-    timer_value: u16,
+    pub debug_disable: bool,
+    pub output_buffer: RingBuffer,
+    pub edge_buffer: RingBuffer,
+    pub last_edge: bool,
+
+    pub envelope: Envelope,
+    pub length_counter: LengthCounter,
+
+    pub mode: u8,
+    pub period_initial: u16,
+    pub period_current: u16,
+
+    pub shift_register: u16,
 }
 
 impl NoiseChannel {
     pub fn new() -> Self {
-        Self {
-            enabled: false,
-            length_counter: 0,
-            length_halt: false,
+        NoiseChannel {
+            debug_disable: false,
+            output_buffer: RingBuffer::new(32768),
+            edge_buffer: RingBuffer::new(32768),
+            last_edge: false,
+
             envelope: Envelope::new(),
-            mode_short: false,
+            length_counter: LengthCounter::new(),
+
+            mode: 0,
+            period_initial: NOISE_PERIOD_TABLE[0],
+            period_current: NOISE_PERIOD_TABLE[0],
+
             shift_register: 1,
-            timer_period: NOISE_PERIOD_TABLE[0],
-            timer_value: NOISE_PERIOD_TABLE[0],
+        }
+    }
+
+    pub fn clock(&mut self) {
+        if self.period_current == 0 {
+            self.period_current = self.period_initial.saturating_sub(1);
+
+            let mut feedback = self.shift_register & 0b1;
+            if self.mode == 1 {
+                feedback ^= (self.shift_register >> 6) & 0b1;
+            } else {
+                feedback ^= (self.shift_register >> 1) & 0b1;
+            }
+            self.shift_register >>= 1;
+            self.shift_register |= feedback << 14;
+            self.last_edge = true;
+        } else {
+            self.period_current = self.period_current.saturating_sub(1);
+        }
+    }
+
+    pub fn output(&self) -> i16 {
+        if self.length_counter.length > 0 {
+            let mut sample = (self.shift_register & 0b1) as i16;
+            sample *= self.envelope.current_volume() as i16;
+            return sample;
+        } else {
+            return 0;
         }
     }
 }
 
 impl Channel for NoiseChannel {
-    fn write_register(&mut self, register: usize, value: u8) {
-        match register {
-            0 => {
-                self.length_halt = (value & 0x20) != 0;
-                self.envelope.write_control(value);
-            }
-            1 => {}
-            2 => {
-                self.mode_short = (value & 0x80) != 0;
-                let period_index = (value & 0x0F) as usize;
-                self.timer_period = NOISE_PERIOD_TABLE[period_index];
-                self.timer_value = self.timer_period;
-            }
-            3 => {
-                self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
-                self.envelope.restart();
-            }
-            _ => {}
-        }
+    fn sample_buffer(&self) -> &RingBuffer {
+        &self.output_buffer
     }
 
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.length_counter = 0;
-        }
+    fn edge_buffer(&self) -> &RingBuffer {
+        &self.edge_buffer
     }
 
-    fn clock_timer(&mut self) -> Option<u16> {
-        if self.timer_value == 0 {
-            self.timer_value = self.timer_period;
-            let feedback_bit = if self.mode_short { 6 } else { 1 };
-            let bit0 = self.shift_register & 1;
-            let bitx = (self.shift_register >> feedback_bit) & 1;
-            let feedback = bit0 ^ bitx;
-            self.shift_register >>= 1;
-            self.shift_register |= feedback << 14;
-        } else {
-            self.timer_value -= 1;
-        }
-        None
+    fn record_current_output(&mut self) {
+        self.output_buffer
+            .push((self.output() as f32 * -4.0) as i16);
+        self.edge_buffer.push(self.last_edge as i16);
+        self.last_edge = false;
     }
 
-    fn clock_quarter_frame(&mut self) {
-        self.envelope.clock();
+    fn min_sample(&self) -> i16 {
+        -60
     }
 
-    fn clock_half_frame(&mut self) {
-        if self.length_counter > 0 && !self.length_halt {
-            self.length_counter -= 1;
-        }
+    fn max_sample(&self) -> i16 {
+        60
     }
 
-    fn output(&self) -> f32 {
-        if !self.enabled || self.length_counter == 0 || (self.shift_register & 1) == 1 {
-            return 0.0;
-        }
-        self.envelope.output() as f32
+    fn muted(&self) -> bool {
+        self.debug_disable
     }
 
-    fn active(&self) -> bool {
-        self.length_counter > 0
+    fn mute(&mut self) {
+        self.debug_disable = true;
+    }
+
+    fn unmute(&mut self) {
+        self.debug_disable = false;
+    }
+
+    fn playing(&self) -> bool {
+        (self.length_counter.length > 0) && (self.envelope.current_volume() > 0)
+    }
+
+    fn rate(&self) -> PlaybackRate {
+        PlaybackRate::Unknown
+    }
+
+    fn volume(&self) -> Option<Volume> {
+        Some(Volume::VolumeIndex {
+            index: self.envelope.current_volume() as usize,
+            max: 15,
+        })
+    }
+
+    fn timbre(&self) -> Option<Timbre> {
+        Some(Timbre::DutyIndex {
+            index: self.mode as usize,
+            max: 1,
+        })
     }
 }

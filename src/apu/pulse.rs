@@ -1,204 +1,189 @@
+use crate::apu::CPU_CLOCK_NTSC;
+use crate::apu::LengthCounter;
+use crate::apu::buffer::RingBuffer;
 use crate::apu::channel::Channel;
+use crate::apu::channel::PlaybackRate;
+use crate::apu::channel::Timbre;
+use crate::apu::channel::Volume;
+use crate::apu::envelope::Envelope;
 
-use super::{LENGTH_TABLE, envelope::Envelope};
-
-const PULSE_DUTY_TABLE: [[u8; 8]; 4] = [
-    [1, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 1, 0, 0, 0, 0],
-    [0, 0, 1, 1, 1, 1, 1, 1],
-];
-
-#[derive(Debug, Clone)]
 pub struct PulseChannel {
-    enabled: bool,
-    duty: u8,
-    duty_position: usize,
-    timer_period: u16,
-    timer_value: u16,
-    length_counter: u8,
-    length_halt: bool,
-    envelope: Envelope,
-    sweep_enabled: bool,
-    sweep_period: u8,
-    sweep_counter: u8,
-    sweep_shift: u8,
-    sweep_negate: bool,
-    sweep_reload: bool,
-    negate_correction: u16,
+    pub debug_disable: bool,
+    pub output_buffer: RingBuffer,
+    pub edge_buffer: RingBuffer,
+    pub last_edge: bool,
+    pub envelope: Envelope,
+    pub length_counter: LengthCounter,
+
+    pub sweep_enabled: bool,
+    pub sweep_period: u8,
+    pub sweep_divider: u8,
+    pub sweep_negate: bool,
+    pub sweep_shift: u8,
+    pub sweep_reload: bool,
+    pub sweep_ones_compliment: bool,
+
+    pub duty: u8,
+    pub sequence_counter: u8,
+    pub period_initial: u16,
+    pub period_current: u16,
 }
 
 impl PulseChannel {
-    pub fn new(negate_correction: u16) -> Self {
-        PulseChannel {
-            enabled: false,
-            duty: 0,
-            duty_position: 0,
-            timer_period: 0,
-            timer_value: 0,
-            length_counter: 0,
-            length_halt: false,
+    pub fn new(sweep_ones_compliment: bool) -> PulseChannel {
+        return PulseChannel {
+            debug_disable: false,
+            output_buffer: RingBuffer::new(32768),
+            edge_buffer: RingBuffer::new(32768),
+            last_edge: false,
+
             envelope: Envelope::new(),
+            length_counter: LengthCounter::new(),
+
             sweep_enabled: false,
-            sweep_period: 1,
-            sweep_counter: 0,
-            sweep_shift: 0,
+            sweep_period: 0,
+            sweep_divider: 0,
             sweep_negate: false,
+            sweep_shift: 0,
             sweep_reload: false,
-            negate_correction,
-        }
+            sweep_ones_compliment: sweep_ones_compliment,
+
+            duty: 0b0000_0001,
+            sequence_counter: 0,
+            period_initial: 0,
+            period_current: 0,
+        };
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.length_counter = 0;
-        }
-    }
+    pub fn clock(&mut self) {
+        if self.period_current == 0 {
+            self.period_current = self.period_initial;
 
-    pub fn write_register(&mut self, register: usize, value: u8) {
-        match register {
-            0 => {
-                self.duty = (value >> 6) & 0x03;
-                self.length_halt = (value & 0x20) != 0;
-                self.envelope.write_control(value);
+            if self.sequence_counter == 0 {
+                self.sequence_counter = 7;
+                self.last_edge = true;
+            } else {
+                self.sequence_counter -= 1;
             }
-            1 => {
-                self.sweep_enabled = (value & 0x80) != 0;
-                self.sweep_period = ((value >> 4) & 0x07) + 1;
-                self.sweep_negate = (value & 0x08) != 0;
-                self.sweep_shift = value & 0x07;
-                self.sweep_reload = true;
-            }
-            2 => {
-                self.timer_period = (self.timer_period & 0xFF00) | value as u16;
-            }
-            3 => {
-                self.timer_period = (self.timer_period & 0x00FF) | (((value & 0x07) as u16) << 8);
-                self.reload_timer();
-                self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
-                self.envelope.restart();
-                self.duty_position = 0;
-            }
-            _ => {}
-        }
-    }
-
-    pub fn clock_timer(&mut self) {
-        if self.timer_period < 8 || self.timer_period > 0x07FF {
-            return;
-        }
-
-        if self.timer_value <= 1 {
-            self.reload_timer();
-            self.duty_position = (self.duty_position + 1) & 0x07;
         } else {
-            self.timer_value -= 1;
+            self.period_current -= 1;
         }
     }
 
-    pub fn clock_quarter_frame(&mut self) {
-        self.envelope.clock();
-    }
-
-    pub fn clock_half_frame(&mut self) {
-        if self.length_counter > 0 && !self.length_halt {
-            self.length_counter -= 1;
-        }
-
-        // Sweep unit follows the two-step process described on
-        // https://www.nesdev.org/wiki/APU_Sweep.
-        if self.sweep_counter == 0 {
-            if self.sweep_enabled && self.sweep_shift > 0 && !self.sweep_mute() {
-                let target = self.sweep_target_period();
-                if target <= 0x07FF {
-                    self.timer_period = target;
-                }
+    pub fn output(&self) -> i16 {
+        if self.length_counter.length > 0 {
+            let target_period = self.target_period();
+            if target_period > 0x7FF || self.period_initial < 8 {
+                return 0;
+            } else {
+                let mut sample = ((self.duty >> self.sequence_counter) & 0b1) as i16;
+                sample *= self.envelope.current_volume() as i16;
+                return sample;
             }
-            self.sweep_counter = self.sweep_period;
         } else {
-            self.sweep_counter -= 1;
-        }
-
-        if self.sweep_reload {
-            self.sweep_counter = self.sweep_period;
-            self.sweep_reload = false;
+            return 0;
         }
     }
 
-    pub fn output(&self) -> f32 {
-        if !self.enabled || self.length_counter == 0 || self.sweep_mute() {
-            return 0.0;
-        }
-        if PULSE_DUTY_TABLE[self.duty as usize][self.duty_position] == 0 {
-            return 0.0;
-        }
-        self.envelope.output() as f32
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.length_counter > 0
-    }
-
-    fn sweep_target_period(&self) -> u16 {
-        let change = self.timer_period >> self.sweep_shift;
+    pub fn target_period(&self) -> u16 {
+        let change_amount = self.period_initial >> self.sweep_shift;
         if self.sweep_negate {
-            self.timer_period
-                .saturating_sub(change + self.negate_correction)
-        } else {
-            self.timer_period.saturating_add(change)
-        }
-    }
-
-    fn sweep_mute(&self) -> bool {
-        if self.timer_period < 8 || self.timer_period > 0x07FF {
-            return true;
-        }
-
-        if self.sweep_enabled && self.sweep_shift > 0 {
-            let change = self.timer_period >> self.sweep_shift;
-            if self.sweep_negate && change + self.negate_correction > self.timer_period {
-                return true;
+            if self.sweep_ones_compliment {
+                if self.sweep_shift == 0 || self.period_initial == 0 {
+                    return 0;
+                }
+                return self.period_initial - change_amount - 1;
+            } else {
+                return self.period_initial - change_amount;
             }
-
-            return self.sweep_target_period() > 0x07FF;
+        } else {
+            return self.period_initial + change_amount;
         }
-
-        false
     }
 
-    fn reload_timer(&mut self) {
-        self.timer_value = self.timer_period.saturating_add(1);
+    pub fn update_sweep(&mut self) {
+        let target_period = self.target_period();
+        if self.sweep_divider == 0
+            && self.sweep_enabled
+            && self.sweep_shift != 0
+            && target_period <= 0x7FF
+            && self.period_initial >= 8
+        {
+            self.period_initial = target_period;
+        }
+        if self.sweep_divider == 0 || self.sweep_reload {
+            self.sweep_divider = self.sweep_period;
+            self.sweep_reload = false;
+        } else {
+            self.sweep_divider -= 1;
+        }
     }
 }
 
 impl Channel for PulseChannel {
-    fn write_register(&mut self, register: usize, value: u8) {
-        self.write_register(register, value);
+    fn sample_buffer(&self) -> &RingBuffer {
+        return &self.output_buffer;
     }
 
-    fn set_enabled(&mut self, enabled: bool) {
-        self.set_enabled(enabled);
+    fn edge_buffer(&self) -> &RingBuffer {
+        return &self.edge_buffer;
     }
 
-    fn clock_timer(&mut self) -> Option<u16> {
-        self.clock_timer();
-        None
+    fn record_current_output(&mut self) {
+        self.output_buffer
+            .push((self.output() as f32 * -4.0) as i16);
+        self.edge_buffer.push(self.last_edge as i16);
+        self.last_edge = false;
     }
 
-    fn clock_quarter_frame(&mut self) {
-        self.clock_quarter_frame();
+    fn min_sample(&self) -> i16 {
+        return -60;
     }
 
-    fn clock_half_frame(&mut self) {
-        self.clock_half_frame();
+    fn max_sample(&self) -> i16 {
+        return 60;
     }
 
-    fn output(&self) -> f32 {
-        self.output()
+    fn muted(&self) -> bool {
+        return self.debug_disable;
     }
 
-    fn active(&self) -> bool {
-        self.is_active()
+    fn mute(&mut self) {
+        self.debug_disable = true;
+    }
+
+    fn unmute(&mut self) {
+        self.debug_disable = false;
+    }
+
+    fn playing(&self) -> bool {
+        return (self.length_counter.length > 0)
+            && (self.target_period() <= 0x7FF)
+            && (self.period_initial > 8)
+            && (self.envelope.current_volume() > 0);
+    }
+
+    fn rate(&self) -> PlaybackRate {
+        let frequency = CPU_CLOCK_NTSC as f32 / (16.0 * (self.period_initial as f32 + 1.0));
+        return PlaybackRate::SampleRate {
+            frequency: frequency,
+        };
+    }
+
+    fn volume(&self) -> Option<Volume> {
+        return Some(Volume::VolumeIndex {
+            index: self.envelope.current_volume() as usize,
+            max: 15,
+        });
+    }
+
+    fn timbre(&self) -> Option<Timbre> {
+        return match self.duty {
+            0b1000_0000 => Some(Timbre::DutyIndex { index: 0, max: 3 }),
+            0b1100_0000 => Some(Timbre::DutyIndex { index: 1, max: 3 }),
+            0b1111_0000 => Some(Timbre::DutyIndex { index: 2, max: 3 }),
+            0b0011_1111 => Some(Timbre::DutyIndex { index: 3, max: 3 }),
+            _ => None,
+        };
     }
 }

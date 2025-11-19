@@ -1,6 +1,9 @@
+// thanks zeta for original APU implementation
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+mod buffer;
 mod channel;
 mod dmc;
 mod envelope;
@@ -11,124 +14,321 @@ mod triangle;
 use channel::Channel;
 use dmc::DmcChannel;
 use noise::NoiseChannel;
+use pulse::PulseChannel;
 use triangle::TriangleChannel;
 
-use pulse::PulseChannel;
+use crate::apu::dmc::DMC_RATE_TABLE;
+use crate::apu::noise::NOISE_PERIOD_TABLE;
 
-const CPU_FREQUENCY_NTSC: f64 = 1_789_773.0;
-const FOUR_STEP_PERIOD: u32 = 14_916;
-const FIVE_STEP_PERIOD: u32 = 18_640;
+const CPU_CLOCK_NTSC: u64 = 1_789_773;
 
-pub(crate) const LENGTH_TABLE: [u8; 32] = [
+pub const LENGTH_TABLE: [u8; 32] = [
     10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
     192, 24, 72, 26, 16, 28, 32, 30,
 ];
 
+#[derive(Clone, Copy)]
+pub struct LengthCounter {
+    pub length: u8,
+    pub halt_flag: bool,
+    pub channel_enabled: bool,
+}
+
+impl LengthCounter {
+    pub fn new() -> Self {
+        LengthCounter {
+            length: 0,
+            halt_flag: false,
+            channel_enabled: false,
+        }
+    }
+
+    pub fn clock(&mut self) {
+        if self.length > 0 && !self.halt_flag {
+            self.length -= 1;
+        }
+    }
+
+    pub fn set_length(&mut self, index: u8) {
+        if self.channel_enabled {
+            let idx = index.min((LENGTH_TABLE.len() - 1) as u8) as usize;
+            self.length = LENGTH_TABLE[idx];
+        }
+    }
+}
+
 pub struct APU {
+    current_cycle: u64,
+
+    frame_sequencer_mode: u8,
+    frame_sequencer: u16,
+    frame_reset_delay: u8,
+    quarter_frame_counter: u32,
+    half_frame_counter: u32,
+
+    frame_interrupt: bool,
+    disable_interrupt: bool,
+
     pulse1: PulseChannel,
     pulse2: PulseChannel,
     triangle: TriangleChannel,
     noise: NoiseChannel,
     dmc: DmcChannel,
-    frame_counter: FrameCounter,
-    sample_interval: f64,
-    sample_timer: f64,
+
+    sample_rate: u64,
+    cpu_clock_rate: u64,
+    generated_samples: u64,
+    next_sample_at: u64,
+
+    pulse_table: Vec<f32>,
+    tnd_table: Vec<f32>,
+
     audio_buffer: Arc<Mutex<VecDeque<f32>>>,
     max_buffer_samples: usize,
-    cycle_parity: bool,
+
+    // DC offset removal filter for click/pop prevention
+    dc_filter_x1: f32,
+    dc_filter_y1: f32,
 }
 
 impl APU {
     pub fn new(sample_rate: u32, audio_buffer: Arc<Mutex<VecDeque<f32>>>) -> Self {
-        let sr = sample_rate.max(1);
-        let interval = CPU_FREQUENCY_NTSC / sr as f64;
+        let sample_rate = sample_rate.max(1) as u64;
+        let max_samples = sample_rate as usize * 4;
+
         APU {
-            pulse1: PulseChannel::new(1),
-            pulse2: PulseChannel::new(0),
+            current_cycle: 0,
+            frame_sequencer_mode: 0,
+            frame_sequencer: 0,
+            frame_reset_delay: 0,
+            quarter_frame_counter: 0,
+            half_frame_counter: 0,
+            frame_interrupt: false,
+            disable_interrupt: false,
+            pulse1: PulseChannel::new(true),
+            pulse2: PulseChannel::new(false),
             triangle: TriangleChannel::new(),
             noise: NoiseChannel::new(),
             dmc: DmcChannel::new(),
-            frame_counter: FrameCounter::new(),
-            sample_interval: interval,
-            sample_timer: 0.0,
+            sample_rate,
+            cpu_clock_rate: CPU_CLOCK_NTSC,
+            generated_samples: 0,
+            next_sample_at: 0,
+            pulse_table: generate_pulse_table(),
+            tnd_table: generate_tnd_table(),
             audio_buffer,
-            max_buffer_samples: (sr as usize).saturating_mul(4),
-            cycle_parity: false,
+            max_buffer_samples: max_samples,
+            dc_filter_x1: 0.0,
+            dc_filter_y1: 0.0,
         }
     }
 
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        self.sample_rate = sample_rate.max(1) as u64;
+        self.max_buffer_samples = (self.sample_rate as usize).saturating_mul(4);
+    }
+
     pub fn write_register(&mut self, addr: u16, value: u8) {
+        let duty_table = [0b1000_0000, 0b1100_0000, 0b1111_0000, 0b0011_1111];
         match addr {
-            0x4000..=0x4003 => {
-                self.pulse1.write_register((addr - 0x4000) as usize, value);
+            0x4000 => {
+                let duty_index = (value & 0b1100_0000) >> 6;
+                let length_disable = (value & 0b0010_0000) != 0;
+                let constant_volume = (value & 0b0001_0000) != 0;
+
+                self.pulse1.duty = duty_table[duty_index as usize];
+                self.pulse1.length_counter.halt_flag = length_disable;
+                self.pulse1.envelope.looping = length_disable;
+                self.pulse1.envelope.enabled = !constant_volume;
+                self.pulse1.envelope.volume_register = value & 0b0000_1111;
             }
-            0x4004..=0x4007 => {
-                self.pulse2.write_register((addr - 0x4004) as usize, value);
+            0x4001 => {
+                self.pulse1.sweep_enabled = (value & 0b1000_0000) != 0;
+                self.pulse1.sweep_period = (value & 0b0111_0000) >> 4;
+                self.pulse1.sweep_negate = (value & 0b0000_1000) != 0;
+                self.pulse1.sweep_shift = value & 0b0000_0111;
+                self.pulse1.sweep_reload = true;
             }
-            0x4008..=0x400B => {
-                self.triangle
-                    .write_register((addr - 0x4008) as usize, value);
+            0x4002 => {
+                let period_low = value as u16;
+                self.pulse1.period_initial = (self.pulse1.period_initial & 0xFF00) | period_low;
+                self.pulse1.period_current = self.pulse1.period_initial;
             }
-            0x400C..=0x400F => {
-                self.noise.write_register((addr - 0x400C) as usize, value);
+            0x4003 => {
+                let period_high = ((value & 0b0000_0111) as u16) << 8;
+                let length_index = (value & 0b1111_1000) >> 3;
+
+                self.pulse1.period_initial = (self.pulse1.period_initial & 0x00FF) | period_high;
+                self.pulse1.period_current = self.pulse1.period_initial;
+                self.pulse1.length_counter.set_length(length_index);
+                self.pulse1.sequence_counter = 0;
+                self.pulse1.envelope.start_flag = true;
             }
-            0x4010..=0x4013 => {
-                self.dmc.write_register((addr - 0x4010) as usize, value);
+            0x4004 => {
+                let duty_index = (value & 0b1100_0000) >> 6;
+                let length_disable = (value & 0b0010_0000) != 0;
+                let constant_volume = (value & 0b0001_0000) != 0;
+
+                self.pulse2.duty = duty_table[duty_index as usize];
+                self.pulse2.length_counter.halt_flag = length_disable;
+                self.pulse2.envelope.looping = length_disable;
+                self.pulse2.envelope.enabled = !constant_volume;
+                self.pulse2.envelope.volume_register = value & 0b0000_1111;
+            }
+            0x4005 => {
+                self.pulse2.sweep_enabled = (value & 0b1000_0000) != 0;
+                self.pulse2.sweep_period = (value & 0b0111_0000) >> 4;
+                self.pulse2.sweep_negate = (value & 0b0000_1000) != 0;
+                self.pulse2.sweep_shift = value & 0b0000_0111;
+                self.pulse2.sweep_reload = true;
+            }
+            0x4006 => {
+                let period_low = value as u16;
+                self.pulse2.period_initial = (self.pulse2.period_initial & 0xFF00) | period_low;
+                self.pulse2.period_current = self.pulse2.period_initial;
+            }
+            0x4007 => {
+                let period_high = ((value & 0b0000_0111) as u16) << 8;
+                let length_index = (value & 0b1111_1000) >> 3;
+
+                self.pulse2.period_initial = (self.pulse2.period_initial & 0x00FF) | period_high;
+                self.pulse2.period_current = self.pulse2.period_initial;
+                self.pulse2.length_counter.set_length(length_index);
+                self.pulse2.sequence_counter = 0;
+                self.pulse2.envelope.start_flag = true;
+            }
+            0x4008 => {
+                self.triangle.control_flag = (value & 0b1000_0000) != 0;
+                self.triangle.length_counter.halt_flag = self.triangle.control_flag;
+                self.triangle.linear_counter_initial = value & 0b0111_1111;
+            }
+            0x400A => {
+                let period_low = value as u16;
+                self.triangle.period_initial = (self.triangle.period_initial & 0xFF00) | period_low;
+                self.triangle.period_current = self.triangle.period_initial;
+            }
+            0x400B => {
+                let period_high = ((value & 0b0000_0111) as u16) << 8;
+                let length_index = (value & 0b1111_1000) >> 3;
+
+                self.triangle.period_initial =
+                    (self.triangle.period_initial & 0x00FF) | period_high;
+                self.triangle.period_current = self.triangle.period_initial;
+                self.triangle.length_counter.set_length(length_index);
+                self.triangle.linear_reload_flag = true;
+            }
+            0x400C => {
+                let length_disable = (value & 0b0010_0000) != 0;
+                let constant_volume = (value & 0b0001_0000) != 0;
+
+                self.noise.length_counter.halt_flag = length_disable;
+                self.noise.envelope.looping = length_disable;
+                self.noise.envelope.enabled = !constant_volume;
+                self.noise.envelope.volume_register = value & 0b0000_1111;
+            }
+            0x400E => {
+                let period_index = value & 0b0000_1111;
+                self.noise.mode = (value & 0b1000_0000) >> 7;
+                self.noise.period_initial = NOISE_PERIOD_TABLE[period_index as usize];
+                self.noise.period_current = self.noise.period_initial;
+            }
+            0x400F => {
+                let length_index = (value & 0b1111_1000) >> 3;
+                self.noise.length_counter.set_length(length_index);
+                self.noise.envelope.start_flag = true;
+            }
+            0x4010 => {
+                self.dmc.looping = (value & 0b0100_0000) != 0;
+                self.dmc.interrupt_enabled = (value & 0b1000_0000) != 0;
+                if !self.dmc.interrupt_enabled {
+                    self.dmc.interrupt_flag = false;
+                }
+                let period_index = value & 0b0000_1111;
+                self.dmc.period_initial = DMC_RATE_TABLE[period_index as usize];
+                self.dmc.period_current = self.dmc.period_initial;
+            }
+            0x4011 => {
+                self.dmc.output_level = value & 0b0111_1111;
+            }
+            0x4012 => {
+                self.dmc.starting_address = 0xC000 + ((value as u16) << 6);
+                self.dmc.current_address = self.dmc.starting_address;
+            }
+            0x4013 => {
+                self.dmc.sample_length = ((value as u16) << 4) + 1;
             }
             _ => {}
         }
     }
 
     pub fn write_status(&mut self, value: u8) {
-        self.pulse1.set_enabled(value & 0x01 != 0);
-        self.pulse2.set_enabled(value & 0x02 != 0);
-        self.triangle.set_enabled(value & 0x04 != 0);
-        self.noise.set_enabled(value & 0x08 != 0);
-        self.dmc.set_enabled(value & 0x10 != 0);
+        self.pulse1.length_counter.channel_enabled = (value & 0b0001) != 0;
+        self.pulse2.length_counter.channel_enabled = (value & 0b0010) != 0;
+        self.triangle.length_counter.channel_enabled = (value & 0b0100) != 0;
+        self.noise.length_counter.channel_enabled = (value & 0b1000) != 0;
 
-        if value & 0x10 == 0 {
-            self.dmc.clear_irq();
+        if !self.pulse1.length_counter.channel_enabled {
+            self.pulse1.length_counter.length = 0;
         }
+        if !self.pulse2.length_counter.channel_enabled {
+            self.pulse2.length_counter.length = 0;
+        }
+        if !self.triangle.length_counter.channel_enabled {
+            self.triangle.length_counter.length = 0;
+        }
+        if !self.noise.length_counter.channel_enabled {
+            self.noise.length_counter.length = 0;
+        }
+
+        let dmc_enable = (value & 0b1_0000) != 0;
+        if !dmc_enable {
+            self.dmc.bytes_remaining = 0;
+        }
+        if dmc_enable && self.dmc.bytes_remaining == 0 {
+            self.dmc.current_address = self.dmc.starting_address;
+            self.dmc.bytes_remaining = self.dmc.sample_length;
+        }
+        self.dmc.interrupt_flag = false;
     }
 
     pub fn read_status(&mut self) -> u8 {
         let mut status = 0u8;
-        if self.pulse1.active() {
+        if self.pulse1.length_counter.length > 0 {
             status |= 0x01;
         }
-        if self.pulse2.active() {
+        if self.pulse2.length_counter.length > 0 {
             status |= 0x02;
         }
-        if self.triangle.active() {
+        if self.triangle.length_counter.length > 0 {
             status |= 0x04;
         }
-        if self.noise.active() {
+        if self.noise.length_counter.length > 0 {
             status |= 0x08;
         }
-        if self.dmc.active() {
+        if self.dmc.bytes_remaining > 0 {
             status |= 0x10;
         }
-        if self.frame_counter.irq_flag() {
+        if self.frame_interrupt {
             status |= 0x40;
-            self.frame_counter.clear_irq();
         }
-        if self.dmc.irq_flag() {
+        if self.dmc.interrupt_flag {
             status |= 0x80;
-            self.dmc.clear_irq();
         }
+        self.frame_interrupt = false;
+        self.dmc.interrupt_flag = false;
         status
     }
 
     pub fn write_frame_counter(&mut self, value: u8) {
-        let five_step = (value & 0x80) != 0;
-        let irq_inhibit = (value & 0x40) != 0;
-        let immediate = self.frame_counter.set_control(five_step, irq_inhibit);
-
-        if immediate.quarter {
-            self.clock_quarter_frame();
+        self.frame_sequencer_mode = (value & 0b1000_0000) >> 7;
+        self.disable_interrupt = (value & 0b0100_0000) != 0;
+        if (self.current_cycle & 0b1) != 0 {
+            self.frame_reset_delay = 3;
+        } else {
+            self.frame_reset_delay = 4;
         }
-        if immediate.half {
-            self.clock_half_frame();
+        if self.disable_interrupt {
+            self.frame_interrupt = false;
         }
     }
 
@@ -137,7 +337,7 @@ impl APU {
     }
 
     pub fn poll_irq(&mut self) -> Option<u8> {
-        if self.frame_counter.irq_flag() || self.dmc.irq_flag() {
+        if self.frame_interrupt || self.dmc.interrupt_flag {
             Some(0)
         } else {
             None
@@ -145,70 +345,38 @@ impl APU {
     }
 
     pub fn clock(&mut self) -> Option<u16> {
-        let dma_request = self.dmc.clock_timer();
+        self.clock_frame_sequencer();
 
-        self.triangle.clock_timer();
+        self.triangle.clock();
 
-        if self.cycle_parity {
-            self.pulse1.clock_timer();
-            self.pulse2.clock_timer();
-            self.noise.clock_timer();
+        let dma_request = self.dmc.clock();
+
+        if (self.current_cycle & 0b1) == 0 {
+            self.pulse1.clock();
+            self.pulse2.clock();
+            self.noise.clock();
         }
 
-        self.cycle_parity = !self.cycle_parity;
+        let current_sample = self.mix_sample();
 
-        let frame_event = self.frame_counter.clock();
-        if frame_event.quarter {
-            self.clock_quarter_frame();
+        if self.current_cycle >= self.next_sample_at {
+            // Ensure sample is within valid range to prevent extreme spikes
+            let composite_sample = current_sample.clamp(-1.0, 1.0);
+            self.push_sample(composite_sample);
+
+            self.pulse1.record_current_output();
+            self.pulse2.record_current_output();
+            self.triangle.record_current_output();
+            self.noise.record_current_output();
+            self.dmc.record_current_output();
+
+            self.generated_samples += 1;
+            self.next_sample_at =
+                ((self.generated_samples + 1) * self.cpu_clock_rate) / self.sample_rate;
         }
-        if frame_event.half {
-            self.clock_half_frame();
-        }
 
-        self.sample_timer += 1.0;
-
-        while self.sample_timer >= self.sample_interval {
-            self.sample_timer -= self.sample_interval;
-            let sample = self.mix_output();
-            self.push_sample(sample);
-        }
-
+        self.current_cycle += 1;
         dma_request
-    }
-
-    fn clock_quarter_frame(&mut self) {
-        self.pulse1.clock_quarter_frame();
-        self.pulse2.clock_quarter_frame();
-        self.triangle.clock_quarter_frame();
-        self.noise.clock_quarter_frame();
-    }
-
-    fn clock_half_frame(&mut self) {
-        self.pulse1.clock_half_frame();
-        self.pulse2.clock_half_frame();
-        self.triangle.clock_half_frame();
-        self.noise.clock_half_frame();
-    }
-
-    fn mix_output(&self) -> f32 {
-        let pulse_total = self.pulse1.output() + self.pulse2.output();
-        let pulse_out = if pulse_total == 0.0 {
-            0.0
-        } else {
-            95.88 / (8128.0 / pulse_total + 100.0)
-        };
-
-        let t = self.triangle.output();
-        let n = self.noise.output();
-        let d = self.dmc.output();
-        let tnd_input = (t / 8227.0) + (n / 12241.0) + (d / 22638.0);
-        let tnd_out = if tnd_input == 0.0 {
-            0.0
-        } else {
-            159.79 / (1.0 / tnd_input + 100.0)
-        };
-
-        pulse_out + tnd_out
     }
 
     fn push_sample(&mut self, sample: f32) {
@@ -219,160 +387,152 @@ impl APU {
             buffer.push_back(sample);
         }
     }
-}
 
-#[derive(Default)]
-struct FrameEvent {
-    quarter: bool,
-    half: bool,
-}
+    fn mix_sample(&mut self) -> f32 {
+        let mut combined_pulse = 0;
 
-#[derive(Clone, Copy)]
-struct FrameStep {
-    cycle: u32,
-    quarter: bool,
-    half: bool,
-    irq: bool,
-}
-
-const FOUR_STEP_SEQUENCE: [FrameStep; 4] = [
-    FrameStep {
-        cycle: 3729,
-        quarter: true,
-        half: false,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 7457,
-        quarter: true,
-        half: true,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 11_186,
-        quarter: true,
-        half: false,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 14_916,
-        quarter: true,
-        half: true,
-        irq: true,
-    },
-];
-
-const FIVE_STEP_SEQUENCE: [FrameStep; 5] = [
-    FrameStep {
-        cycle: 3729,
-        quarter: true,
-        half: false,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 7457,
-        quarter: true,
-        half: true,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 11_186,
-        quarter: true,
-        half: false,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 14_916,
-        quarter: true,
-        half: true,
-        irq: false,
-    },
-    FrameStep {
-        cycle: 18_640,
-        quarter: true,
-        half: false,
-        irq: false,
-    },
-];
-
-enum FrameCounterMode {
-    FourStep,
-    FiveStep,
-}
-
-struct FrameCounter {
-    mode: FrameCounterMode,
-    cycle: u32,
-    irq_inhibit: bool,
-    irq_flag: bool,
-}
-
-impl FrameCounter {
-    fn new() -> Self {
-        FrameCounter {
-            mode: FrameCounterMode::FourStep,
-            cycle: 0,
-            irq_inhibit: false,
-            irq_flag: false,
+        if !self.pulse1.debug_disable {
+            combined_pulse += self.pulse1.output();
         }
-    }
+        if !self.pulse2.debug_disable {
+            combined_pulse += self.pulse2.output();
+        }
 
-    fn clock(&mut self) -> FrameEvent {
-        let mut event = FrameEvent::default();
+        let pulse_output = self.pulse_table[combined_pulse.min(30) as usize];
 
-        let (sequence, period) = match self.mode {
-            FrameCounterMode::FourStep => (&FOUR_STEP_SEQUENCE[..], FOUR_STEP_PERIOD),
-            FrameCounterMode::FiveStep => (&FIVE_STEP_SEQUENCE[..], FIVE_STEP_PERIOD),
+        let triangle_output = if self.triangle.debug_disable {
+            0
+        } else {
+            self.triangle.output()
+        };
+        let noise_output = if self.noise.debug_disable {
+            0
+        } else {
+            self.noise.output()
+        };
+        let dmc_output = if self.dmc.debug_disable {
+            0
+        } else {
+            self.dmc.output()
         };
 
-        for step in sequence {
-            if self.cycle == step.cycle {
-                if step.quarter {
-                    event.quarter = true;
-                }
-                if step.half {
-                    event.half = true;
-                }
-                if step.irq && !self.irq_inhibit {
-                    self.irq_flag = true;
+        let tnd_index = full_tnd_index(
+            (triangle_output as usize).min(15),
+            (noise_output as usize).min(15),
+            (dmc_output as usize).min(127),
+        );
+        let tnd_output = self.tnd_table[tnd_index];
+
+        let mixed = (pulse_output - 0.5) + (tnd_output - 0.5);
+
+        // Apply DC offset removal filter to eliminate pops and clicks
+        // High-pass filter: y = 0.9999 * (y + x - x_prev)
+        let dc_alpha = 0.9999;
+        let filtered = dc_alpha * (self.dc_filter_y1 + mixed - self.dc_filter_x1);
+        self.dc_filter_x1 = mixed;
+        self.dc_filter_y1 = filtered;
+
+        filtered
+    }
+
+    fn clock_frame_sequencer(&mut self) {
+        if self.frame_reset_delay > 0 {
+            self.frame_reset_delay -= 1;
+            if self.frame_reset_delay == 0 {
+                self.frame_sequencer = 0;
+                if self.frame_sequencer_mode == 1 {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
                 }
             }
         }
 
-        if self.cycle >= period {
-            self.cycle = 0;
-        }
-
-        self.cycle = self.cycle.wrapping_add(1);
-
-        event
-    }
-
-    fn set_control(&mut self, five_step: bool, irq_inhibit: bool) -> FrameEvent {
-        self.mode = if five_step {
-            FrameCounterMode::FiveStep
-        } else {
-            FrameCounterMode::FourStep
-        };
-        self.irq_inhibit = irq_inhibit;
-        self.irq_flag = false;
-        self.cycle = 0;
-
-        if five_step {
-            FrameEvent {
-                quarter: true,
-                half: true,
+        if self.frame_sequencer_mode == 0 {
+            match self.frame_sequencer {
+                7457 => self.clock_quarter_frame(),
+                14913 => {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                22371 => self.clock_quarter_frame(),
+                29828 => {
+                    if !self.disable_interrupt {
+                        self.frame_interrupt = true;
+                    }
+                }
+                29829 => {
+                    if !self.disable_interrupt {
+                        self.frame_interrupt = true;
+                    }
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                29830 => {
+                    if !self.disable_interrupt {
+                        self.frame_interrupt = true;
+                    }
+                    self.frame_sequencer = 0;
+                }
+                _ => {}
             }
         } else {
-            FrameEvent::default()
+            match self.frame_sequencer {
+                7457 => self.clock_quarter_frame(),
+                14913 => {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                22371 => self.clock_quarter_frame(),
+                37281 => {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                37282 => {
+                    self.frame_sequencer = 0;
+                }
+                _ => {}
+            }
         }
+
+        self.frame_sequencer += 1;
     }
 
-    fn irq_flag(&self) -> bool {
-        self.irq_flag
+    fn clock_quarter_frame(&mut self) {
+        self.pulse1.envelope.clock();
+        self.pulse2.envelope.clock();
+        self.triangle.update_linear_counter();
+        self.noise.envelope.clock();
+        self.quarter_frame_counter = self.quarter_frame_counter.wrapping_add(1);
     }
 
-    fn clear_irq(&mut self) {
-        self.irq_flag = false;
+    fn clock_half_frame(&mut self) {
+        self.pulse1.update_sweep();
+        self.pulse2.update_sweep();
+
+        self.pulse1.length_counter.clock();
+        self.pulse2.length_counter.clock();
+        self.triangle.length_counter.clock();
+        self.noise.length_counter.clock();
+        self.half_frame_counter = self.half_frame_counter.wrapping_add(1);
     }
+}
+
+fn generate_pulse_table() -> Vec<f32> {
+    let mut pulse_table = vec![0f32; 31];
+    for n in 1..31 {
+        pulse_table[n] = 95.52 / (8128.0 / (n as f32) + 100.0);
+    }
+    pulse_table
+}
+
+fn full_tnd_index(t: usize, n: usize, d: usize) -> usize {
+    3 * t + 2 * n + d
+}
+
+fn generate_tnd_table() -> Vec<f32> {
+    let mut tnd_table = vec![0f32; 203];
+    for n in 1..203 {
+        tnd_table[n] = 163.67 / (24329.0 / n as f32 + 100.0);
+    }
+    tnd_table
 }
