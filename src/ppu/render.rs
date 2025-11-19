@@ -1,5 +1,5 @@
 use crate::{
-    mapper::ChrSource,
+    mapper::{ChrSource, Mapper},
     ppu::framebuffer::Framebuffer,
     ppu::palette,
     ppu::{PPU, ScrollSegment},
@@ -26,10 +26,15 @@ fn system_palette_color(ppu: &PPU, color_index: u8) -> (u8, u8, u8) {
     palette::SYSTEM_PALLETE[idx as usize]
 }
 
-fn bg_palette(ppu: &PPU, nametable_index: usize, tile_column: usize, tile_row: usize) -> [u8; 4] {
+fn bg_palette(
+    ppu: &PPU,
+    mapper: &dyn Mapper,
+    nametable_index: usize,
+    tile_column: usize,
+    tile_row: usize,
+) -> [u8; 4] {
     if let Some(override_idx) =
-        ppu.mapper
-            .background_palette_override(nametable_index, tile_column, tile_row)
+        mapper.background_palette_override(nametable_index, tile_column, tile_row)
     {
         let pallete_start: usize = 1 + (override_idx as usize) * 4;
         return [
@@ -40,7 +45,7 @@ fn bg_palette(ppu: &PPU, nametable_index: usize, tile_column: usize, tile_row: u
         ];
     }
 
-    let attr_byte = ppu.read_attribute_entry(nametable_index, tile_column, tile_row);
+    let attr_byte = ppu.read_attribute_entry(mapper, nametable_index, tile_column, tile_row);
 
     let pallet_idx = match (tile_column % 4 / 2, tile_row % 4 / 2) {
         (0, 0) => attr_byte & 0b11,
@@ -71,6 +76,7 @@ fn sprite_palette(ppu: &PPU, pallete_idx: u8) -> [u8; 4] {
 
 fn render_nametable(
     ppu: &PPU,
+    mapper: &mut dyn Mapper,
     frame: &mut Framebuffer,
     bg_priority: &mut [u8],
     nametable_index: usize,
@@ -86,9 +92,10 @@ fn render_nametable(
     for i in 0..0x3c0 {
         let tile_column = i % 32;
         let tile_row = i / 32;
-        let tile_idx = ppu.read_nametable_entry(nametable_index, tile_column, tile_row) as u16;
+        let tile_idx =
+            ppu.read_nametable_entry(mapper, nametable_index, tile_column, tile_row) as u16;
         let mut tile = [0u8; 16];
-        if let Some(override_tile) = ppu.mapper.background_tile_override(
+        if let Some(override_tile) = mapper.background_tile_override(
             nametable_index,
             tile_column,
             tile_row,
@@ -98,14 +105,14 @@ fn render_nametable(
             tile.copy_from_slice(&override_tile);
         } else {
             for i in 0..16 {
-                tile[i] = ppu.mapper.read_chr(
+                tile[i] = mapper.read_chr(
                     ppu.ctrl.bknd_pattern_addr() + tile_idx * 16 + i as u16,
                     ChrSource::Background,
                 );
             }
         }
         let tile = &tile;
-        let palette = bg_palette(ppu, nametable_index, tile_column, tile_row);
+        let palette = bg_palette(ppu, mapper, nametable_index, tile_column, tile_row);
 
         for y in 0..=7 {
             let mut upper = tile[y];
@@ -160,7 +167,7 @@ fn render_nametable(
     }
 }
 
-fn render_sprites(ppu: &PPU, frame: &mut Framebuffer, bg_priority: &[u8]) {
+fn render_sprites(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer, bg_priority: &[u8]) {
     if !ppu.mask.show_sprites() {
         return;
     }
@@ -190,14 +197,14 @@ fn render_sprites(ppu: &PPU, frame: &mut Framebuffer, bg_priority: &[u8]) {
             for half in 0..2 {
                 let addr = bank + (base_tile + half as u16) * 16;
                 for byte in 0..16 {
-                    tile[half * 16 + byte] =
-                        ppu.mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
+                        tile[half * 16 + byte] =
+                            mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
                 }
             }
         } else {
             let addr = ppu.ctrl.sprt_pattern_addr() + tile_idx * 16;
             for byte in 0..16 {
-                tile[byte as usize] = ppu.mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
+                tile[byte as usize] = mapper.read_chr(addr + byte as u16, ChrSource::Sprite);
             }
         }
 
@@ -247,7 +254,7 @@ fn render_sprites(ppu: &PPU, frame: &mut Framebuffer, bg_priority: &[u8]) {
     }
 }
 
-pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
+pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
     let universal_color = system_palette_color(ppu, ppu.palette_table[0]);
     for chunk in frame.data.chunks_mut(3) {
         chunk[0] = universal_color.0;
@@ -306,6 +313,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
 
             render_nametable(
                 ppu,
+                mapper,
                 frame,
                 &mut bg_priority,
                 base_index,
@@ -318,6 +326,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
             if scroll_x > 0 {
                 render_nametable(
                     ppu,
+                    mapper,
                     frame,
                     &mut bg_priority,
                     horizontal_index,
@@ -331,6 +340,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
             if scroll_y > 0 {
                 render_nametable(
                     ppu,
+                    mapper,
                     frame,
                     &mut bg_priority,
                     vertical_index,
@@ -344,6 +354,7 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
             if scroll_x > 0 && scroll_y > 0 {
                 render_nametable(
                     ppu,
+                    mapper,
                     frame,
                     &mut bg_priority,
                     diagonal_index,
@@ -356,5 +367,5 @@ pub fn render(ppu: &PPU, frame: &mut Framebuffer) {
         }
     }
 
-    render_sprites(ppu, frame, &bg_priority);
+    render_sprites(ppu, mapper, frame, &bg_priority);
 }

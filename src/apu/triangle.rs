@@ -40,6 +40,7 @@ impl Channel for TriangleChannel {
             0 => {
                 self.control_flag = (value & 0x80) != 0;
                 self.linear_reload_value = value & 0x7F;
+                self.linear_reload_flag = true;
             }
             1 => {}
             2 => {
@@ -47,6 +48,7 @@ impl Channel for TriangleChannel {
             }
             3 => {
                 self.timer_period = (self.timer_period & 0x00FF) | (((value & 0x07) as u16) << 8);
+                self.timer_value = self.timer_period;
                 self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
                 self.linear_reload_flag = true;
                 self.sequence_index = 0;

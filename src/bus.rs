@@ -1,4 +1,11 @@
-use crate::{apu::APU, cart::Cart, joypad::Joypad, mapper::Mapper, memory::Memory, ppu::PPU};
+use crate::{
+    apu::APU,
+    cart::Cart,
+    joypad::Joypad,
+    mapper::Mapper,
+    memory::Memory,
+    ppu::{PPU, framebuffer::Framebuffer, render},
+};
 
 // Address ranges per https://www.nesdev.org/wiki/CPU_memory_map
 const CPU_RAM_MIRROR_MASK: u16 = 0x07FF;
@@ -7,42 +14,22 @@ const PPU_REGISTERS_MIRRORS_END: u16 = 0x3FFF;
 const DISABLED_APU_IO_END: u16 = 0x401F;
 const CARTRIDGE_SPACE_START: u16 = 0x4020;
 
-pub struct Bus<'call> {
+pub struct Bus {
     cpu_vram: [u8; 2048],
-    mapper: &'call mut dyn Mapper,
-    ppu: PPU<'call>,
-    apu: APU,
-
-    cycles: usize,
-    gameloop_callback: Box<dyn FnMut(&PPU, &mut Joypad, &mut Joypad) + 'call>,
-
-    joypad1: Joypad,
-    joypad2: Joypad,
+    pub cart: Cart,
+    pub ppu: PPU,
+    pub apu: APU,
+    joypads: [Joypad; 2],
 }
 
-impl<'a> Bus<'a> {
-    pub fn new<F>(cart: &'_ mut Cart, apu: APU, gameloop_callback: F) -> Bus<'_>
-    where
-        F: FnMut(&PPU, &mut Joypad, &mut Joypad) + 'static,
-    {
-        let mapper_ptr: *mut dyn Mapper = cart.mapper.as_mut();
-
-        // Create a &mut dyn Mapper for PPU::new using unsafe from the raw pointer
-        let ppu = unsafe {
-            // Safety: we know cart.mapper lives for at least the lifetime 'a we claim,
-            // and we ensure no simultaneous conflicting borrows at runtime.
-            PPU::new(&mut *mapper_ptr)
-        };
-
+impl Bus {
+    pub fn new(cart: Cart, apu: APU) -> Bus {
         Bus {
             cpu_vram: [0; 2048],
-            mapper: unsafe { &mut *mapper_ptr },
-            ppu,
+            cart,
+            ppu: PPU::new(),
             apu,
-            cycles: 0,
-            gameloop_callback: Box::new(gameloop_callback),
-            joypad1: Joypad::new(),
-            joypad2: Joypad::new(),
+            joypads: [Joypad::new(), Joypad::new()],
         }
     }
 
@@ -53,25 +40,78 @@ impl<'a> Bus<'a> {
     fn normalize_ppu_register_addr(addr: u16) -> u16 {
         0x2000 + (addr & 0x0007)
     }
+
+    pub fn mapper_mut(&mut self) -> &mut dyn Mapper {
+        self.cart.mapper.as_mut()
+    }
+
+    pub fn joypad_mut(&mut self, idx: usize) -> Option<&mut Joypad> {
+        self.joypads.get_mut(idx)
+    }
+
+    pub fn joypad(&self, idx: usize) -> Option<&Joypad> {
+        self.joypads.get(idx)
+    }
+
+    pub fn joypads_mut(&mut self) -> (&mut Joypad, &mut Joypad) {
+        let (left, right) = self.joypads.split_at_mut(1);
+        (&mut left[0], &mut right[0])
+    }
+
+    pub fn clock_ppu(&mut self) -> bool {
+        let mapper = self.cart.mapper.as_mut();
+        self.ppu.clock(mapper)
+    }
+
+    pub fn clock_apu(&mut self) {
+        if let Some(addr) = self.apu.clock() {
+            let value = self.read(addr);
+            self.apu.provide_dmc_sample(value);
+        }
+    }
+
+    pub fn poll_nmi(&mut self) -> bool {
+        self.ppu.poll_nmi_interrupt().is_some()
+    }
+
+    pub fn poll_irq(&mut self) -> bool {
+        self.apu.poll_irq().is_some() || self.cart.mapper.poll_irq().is_some()
+    }
+
+    pub fn peek(&self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=CPU_RAM_MIRRORS_END => self.cpu_vram[Self::mirror_cpu_vram_addr(addr)],
+            CARTRIDGE_SPACE_START..=0xFFFF => self.cart.mapper.peek_prg(addr),
+            _ => 0,
+        }
+    }
+
+    pub fn render_frame(&mut self, framebuffer: &mut Framebuffer) {
+        let mapper = self.cart.mapper.as_mut();
+        render::render(&self.ppu, mapper, framebuffer);
+    }
 }
 
-impl<'a> Memory for Bus<'a> {
+impl Memory for Bus {
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=CPU_RAM_MIRRORS_END => self.cpu_vram[Self::mirror_cpu_vram_addr(addr)],
             0x2000..=PPU_REGISTERS_MIRRORS_END => match Self::normalize_ppu_register_addr(addr) {
                 0x2002 => self.ppu.read_status(),
                 0x2004 => self.ppu.read_oam_data(),
-                0x2007 => self.ppu.read_data(),
+                0x2007 => {
+                    let mapper = self.cart.mapper.as_mut();
+                    self.ppu.read_data(mapper)
+                }
                 _ => 0,
             },
             0x4000..=0x4013 => 0,
             0x4014 => 0,
             0x4015 => self.apu.read_status(),
-            0x4016 => self.joypad1.read(),
-            0x4017 => 0, // self.joypad2.read(), // TODO: fix smb not liking having a 2nd controller
+            0x4016 => self.joypads[0].read(),
+            0x4017 => self.joypads[1].read(),
             0x4018..=DISABLED_APU_IO_END => 0,
-            CARTRIDGE_SPACE_START..=0xFFFF => self.mapper.read_prg(addr),
+            CARTRIDGE_SPACE_START..=0xFFFF => self.cart.mapper.read_prg(addr),
         }
     }
 
@@ -87,8 +127,10 @@ impl<'a> Memory for Bus<'a> {
                 0x2004 => self.ppu.write_to_oam_data(data),
                 0x2005 => self.ppu.write_to_scroll(data),
                 0x2006 => self.ppu.write_to_ppu_addr(data),
-                0x2007 => self.ppu.write_to_data(data),
-                0x2002 => panic!("attempt to write to PPU status register"),
+                0x2007 => {
+                    let mapper = self.cart.mapper.as_mut();
+                    self.ppu.write_to_data(mapper, data);
+                }
                 _ => {}
             },
             0x4000..=0x4013 => {
@@ -102,59 +144,21 @@ impl<'a> Memory for Bus<'a> {
                 }
 
                 self.ppu.write_oam_dma(&buffer);
-
-                // todo: handle this eventually
-                // let add_cycles: u16 = if self.cycles % 2 == 1 { 514 } else { 513 };
-                // self.tick(add_cycles); //todo this will cause weird effects as PPU will have 513/514 * 3 ticks
             }
             0x4015 => {
                 self.apu.write_status(data);
             }
-            0x4016 => self.joypad1.write(data),
+            0x4016 => {
+                self.joypads[0].write(data);
+                self.joypads[1].write(data);
+            }
             0x4017 => {
                 self.apu.write_frame_counter(data);
             }
             0x4018..=DISABLED_APU_IO_END => {
                 // disabled APU and IO functionality
             }
-            CARTRIDGE_SPACE_START..=0xFFFF => self.mapper.write_prg(addr, data),
+            CARTRIDGE_SPACE_START..=0xFFFF => self.cart.mapper.write_prg(addr, data),
         }
-    }
-
-    fn tick(&mut self, cycles: u8) {
-        self.cycles += cycles as usize;
-
-        let nmi_before = self.ppu.nmi_interrupt.is_some();
-        self.ppu.tick(cycles * 3);
-        for _ in 0..cycles {
-            if let Some(addr) = self.apu.clock() {
-                let value = self.read(addr);
-                self.apu.provide_dmc_sample(value);
-            }
-        }
-        let nmi_after = self.ppu.nmi_interrupt.is_some();
-
-        if !nmi_before && nmi_after {
-            (self.gameloop_callback)(&self.ppu, &mut self.joypad1, &mut self.joypad2);
-        }
-    }
-
-    fn poll_nmi_status(&mut self) -> Option<u8> {
-        self.ppu.poll_nmi_interrupt()
-    }
-
-    fn poll_irq_status(&mut self) -> Option<u8> {
-        if let Some(v) = self.apu.poll_irq() {
-            Some(v)
-        } else {
-            self.mapper.poll_irq()
-        }
-    }
-
-    fn load(&mut self, start_addr: u16, data: &[u8]) {
-        for i in 0..(data.len() as u16) {
-            self.write(start_addr + i, data[i as usize]);
-        }
-        self.write_u16(0xFFFC, start_addr);
     }
 }

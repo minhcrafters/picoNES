@@ -15,12 +15,4 @@ pub trait Memory {
         self.write(addr, lo);
         self.write(addr + 1, hi);
     }
-
-    fn tick(&mut self, cycles: u8);
-
-    fn poll_nmi_status(&mut self) -> Option<u8>;
-
-    fn poll_irq_status(&mut self) -> Option<u8>;
-
-    fn load(&mut self, start_addr: u16, data: &[u8]);
 }

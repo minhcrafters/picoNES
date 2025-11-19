@@ -18,6 +18,9 @@ pub trait Mapper {
     fn write_prg(&mut self, addr: u16, data: u8);
     fn read_chr(&self, addr: u16, source: ChrSource) -> u8;
     fn write_chr(&mut self, addr: u16, data: u8);
+    fn peek_prg(&self, addr: u16) -> u8 {
+        self.read_prg(addr)
+    }
     fn mirroring(&self) -> crate::cart::Mirroring;
     fn handle_scanline(&mut self, _rendering_enabled: bool) {}
     fn poll_irq(&self) -> Option<u8> {

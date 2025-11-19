@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 mod channel;
 mod dmc;
+mod envelope;
 mod noise;
 mod pulse;
 mod triangle;
@@ -42,8 +43,8 @@ impl APU {
         let sr = sample_rate.max(1);
         let interval = CPU_FREQUENCY_NTSC / sr as f64;
         APU {
-            pulse1: PulseChannel::new(0),
-            pulse2: PulseChannel::new(1),
+            pulse1: PulseChannel::new(1),
+            pulse2: PulseChannel::new(0),
             triangle: TriangleChannel::new(),
             noise: NoiseChannel::new(),
             dmc: DmcChannel::new(),
@@ -183,8 +184,6 @@ impl APU {
     }
 
     fn clock_half_frame(&mut self) {
-        self.clock_quarter_frame();
-
         self.pulse1.clock_half_frame();
         self.pulse2.clock_half_frame();
         self.triangle.clock_half_frame();
@@ -209,7 +208,7 @@ impl APU {
             159.79 / (1.0 / tnd_input + 100.0)
         };
 
-        ((pulse_out + tnd_out) * 2.0 - 1.0) as f32
+        pulse_out + tnd_out
     }
 
     fn push_sample(&mut self, sample: f32) {
