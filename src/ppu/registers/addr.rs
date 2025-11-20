@@ -17,7 +17,7 @@ impl AddrRegister {
         }
     }
 
-    fn set(&mut self, data: u16) {
+    pub fn set(&mut self, data: u16) {
         self.value.0 = (data >> 8) as u8;
         self.value.1 = (data & 0xff) as u8;
     }
@@ -29,8 +29,8 @@ impl AddrRegister {
             self.value.1 = data;
         }
 
-        if self.get() > 0x3fff {
-            //mirror down addr above 0x3fff
+        if self.get() > 0x3FFF {
+            // mirror down addr above 0x3FFF
             self.set(self.get() & 0b11111111111111);
         }
 
@@ -43,8 +43,8 @@ impl AddrRegister {
         if lo > self.value.1 {
             self.value.0 = self.value.0.wrapping_add(1);
         }
-        if self.get() > 0x3fff {
-            self.set(self.get() & 0b11111111111111); //mirror down addr above 0x3fff
+        if self.get() > 0x3FFF {
+            self.set(self.get() & 0b11111111111111); // mirror down addr above 0x3FFF
         }
     }
 

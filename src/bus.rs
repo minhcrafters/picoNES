@@ -1,6 +1,7 @@
 use crate::{
     apu::APU,
     cart::Cart,
+    cpu::CPU,
     joypad::Joypad,
     mapper::Mapper,
     memory::Memory,
@@ -15,7 +16,7 @@ const DISABLED_APU_IO_END: u16 = 0x401F;
 const CARTRIDGE_SPACE_START: u16 = 0x4020;
 
 pub struct Bus {
-    cpu_vram: [u8; 2048],
+    pub cpu: CPU,
     pub cart: Cart,
     pub ppu: PPU,
     pub apu: APU,
@@ -25,7 +26,7 @@ pub struct Bus {
 impl Bus {
     pub fn new(cart: Cart, apu: APU) -> Bus {
         Bus {
-            cpu_vram: [0; 2048],
+            cpu: CPU::new(),
             cart,
             ppu: PPU::new(),
             apu,
@@ -38,7 +39,7 @@ impl Bus {
     }
 
     fn normalize_ppu_register_addr(addr: u16) -> u16 {
-        0x2000 + (addr & 0x0007)
+        addr & 0b00100000_00000111
     }
 
     pub fn mapper_mut(&mut self) -> &mut dyn Mapper {
@@ -80,7 +81,7 @@ impl Bus {
 
     pub fn peek(&self, addr: u16) -> u8 {
         match addr {
-            0x0000..=CPU_RAM_MIRRORS_END => self.cpu_vram[Self::mirror_cpu_vram_addr(addr)],
+            0x0000..=CPU_RAM_MIRRORS_END => self.cpu.vram[Self::mirror_cpu_vram_addr(addr)],
             CARTRIDGE_SPACE_START..=0xFFFF => self.cart.mapper.peek_prg(addr),
             _ => 0,
         }
@@ -90,12 +91,32 @@ impl Bus {
         let mapper = self.cart.mapper.as_mut();
         render::render(&self.ppu, mapper, framebuffer);
     }
+
+    pub fn cpu_clock(&mut self) -> bool {
+        let cpu_ptr = std::ptr::addr_of_mut!(self.cpu);
+        unsafe { (*cpu_ptr).clock(self) }
+    }
+
+    pub fn cpu_reset(&mut self) {
+        let cpu_ptr = std::ptr::addr_of_mut!(self.cpu);
+        unsafe { (*cpu_ptr).reset(self) }
+    }
+
+    pub fn cpu_nmi(&mut self) {
+        let cpu_ptr = std::ptr::addr_of_mut!(self.cpu);
+        unsafe { (*cpu_ptr).nmi(self) }
+    }
+
+    pub fn cpu_irq(&mut self) {
+        let cpu_ptr = std::ptr::addr_of_mut!(self.cpu);
+        unsafe { (*cpu_ptr).irq(self) }
+    }
 }
 
 impl Memory for Bus {
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
-            0x0000..=CPU_RAM_MIRRORS_END => self.cpu_vram[Self::mirror_cpu_vram_addr(addr)],
+            0x0000..=CPU_RAM_MIRRORS_END => self.cpu.vram[Self::mirror_cpu_vram_addr(addr)],
             0x2000..=PPU_REGISTERS_MIRRORS_END => match Self::normalize_ppu_register_addr(addr) {
                 0x2002 => self.ppu.read_status(),
                 0x2004 => self.ppu.read_oam_data(),
@@ -118,21 +139,32 @@ impl Memory for Bus {
     fn write(&mut self, addr: u16, data: u8) {
         match addr {
             0x0000..=CPU_RAM_MIRRORS_END => {
-                self.cpu_vram[Self::mirror_cpu_vram_addr(addr)] = data;
+                self.cpu.vram[Self::mirror_cpu_vram_addr(addr)] = data;
             }
-            0x2000..=PPU_REGISTERS_MIRRORS_END => match Self::normalize_ppu_register_addr(addr) {
-                0x2000 => self.ppu.write_to_ctrl(data),
-                0x2001 => self.ppu.write_to_mask(data),
-                0x2003 => self.ppu.write_to_oam_addr(data),
-                0x2004 => self.ppu.write_to_oam_data(data),
-                0x2005 => self.ppu.write_to_scroll(data),
-                0x2006 => self.ppu.write_to_ppu_addr(data),
-                0x2007 => {
-                    let mapper = self.cart.mapper.as_mut();
-                    self.ppu.write_to_data(mapper, data);
+            0x2000..=PPU_REGISTERS_MIRRORS_END => {
+                let reg = Self::normalize_ppu_register_addr(addr);
+
+                // if reg == 0x2000 || reg == 0x2005 || reg == 0x2006 {
+                //     eprintln!(
+                //         "[PPU WRITE] addr={:04X} norm={:04X} data={:02X}",
+                //         addr, reg, data
+                //     );
+                // }
+
+                match reg {
+                    0x2000 => self.ppu.write_to_ctrl(data),
+                    0x2001 => self.ppu.write_to_mask(data),
+                    0x2003 => self.ppu.write_to_oam_addr(data),
+                    0x2004 => self.ppu.write_to_oam_data(data),
+                    0x2005 => self.ppu.write_to_scroll(data),
+                    0x2006 => self.ppu.write_to_ppu_addr(data),
+                    0x2007 => {
+                        let mapper = self.cart.mapper.as_mut();
+                        self.ppu.write_to_data(mapper, data);
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             0x4000..=0x4013 => {
                 self.apu.write_register(addr, data);
             }

@@ -46,7 +46,7 @@ impl ControlRegister {
             0 => 0x2000,
             1 => 0x2400,
             2 => 0x2800,
-            3 => 0x2c00,
+            3 => 0x2C00,
             _ => panic!("not possible"),
         }
     }

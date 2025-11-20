@@ -11,11 +11,7 @@ pub struct NromMapper {
 impl NromMapper {
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, mirroring: Mirroring) -> Self {
         let chr_is_ram = chr_rom.is_empty();
-        let chr = if chr_is_ram {
-            vec![0; 0x2000]
-        } else {
-            chr_rom
-        };
+        let chr = if chr_is_ram { vec![0; 0x2000] } else { chr_rom };
 
         NromMapper {
             prg_rom,
@@ -37,7 +33,7 @@ impl Mapper for NromMapper {
         }
 
         let mut offset = (addr - 0x8000) as usize;
-        if self.prg_rom.len() == 0x4000 {
+        if self.prg_rom.len() == 0x4000 && offset >= 0x4000 {
             // Mirror 16KB PRG across both $8000-$BFFF and $C000-$FFFF
             offset %= 0x4000;
         }

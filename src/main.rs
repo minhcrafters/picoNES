@@ -200,7 +200,7 @@ fn run_frame(nes: &mut Nes, debug_trace: bool) {
         } = nes.clock();
 
         if debug_trace && instruction_complete {
-            println!("{}", trace(&nes.cpu, &nes.bus));
+            println!("{}", trace(&nes.bus.cpu, &nes.bus));
         }
 
         if frame_complete {

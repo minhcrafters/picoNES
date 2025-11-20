@@ -1,8 +1,8 @@
 use crate::{
     mapper::{ChrSource, Mapper},
+    ppu::PPU,
     ppu::framebuffer::Framebuffer,
     ppu::palette,
-    ppu::{PPU, ScrollSegment},
 };
 
 struct Rect {
@@ -265,31 +265,10 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
 
     let scroll_segments = ppu.scroll_segments();
 
-    let fallback = if scroll_segments.is_empty() {
-        let scroll_x = ppu.scroll.scroll_x();
-        let scroll_y = ppu.scroll.scroll_y();
-        let base_index = ppu.scroll.base_nametable();
-        Some(ScrollSegment {
-            start_scanline: 0,
-            scroll_x,
-            scroll_y,
-            base_nametable: base_index,
-            screen_origin: 0,
-        })
-    } else {
-        None
-    };
-
-    let segments: &[ScrollSegment] = if let Some(fallback_segment) = fallback.as_ref() {
-        std::slice::from_ref(fallback_segment)
-    } else {
-        scroll_segments
-    };
-
     if ppu.mask.show_background() {
-        for (idx, segment) in segments.iter().enumerate() {
+        for (idx, segment) in scroll_segments.iter().enumerate() {
             let clip_start = segment.start_scanline.min(Framebuffer::HEIGHT);
-            let clip_end = segments
+            let clip_end = scroll_segments
                 .get(idx + 1)
                 .map(|next| next.start_scanline.min(Framebuffer::HEIGHT))
                 .unwrap_or(Framebuffer::HEIGHT);
@@ -298,23 +277,20 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
                 continue;
             }
 
-            // Fix scroll calculation for proper camera following
             let scroll_x_full = segment.scroll_x;
             let scroll_y_full = segment.scroll_y;
 
-            let base_nametable = segment.base_nametable & 0x03;
-
-            // Check if we've scrolled beyond nametable boundaries (NES PPU scrolling)
-            let h_offset = if scroll_x_full >= 256 { 1 } else { 0 };
-            let v_offset = if scroll_y_full >= 240 { 1 } else { 0 };
-
-            let active_base = (base_nametable ^ h_offset ^ (v_offset << 1)) & 0x03;
-            let horizontal_index = (base_nametable ^ 0x01 ^ h_offset ^ (v_offset << 1)) & 0x03;
-            let vertical_index = (base_nametable ^ 0x02 ^ h_offset ^ (v_offset << 1)) & 0x03;
-            let diagonal_index = (base_nametable ^ 0x03 ^ h_offset ^ (v_offset << 1)) & 0x03;
-
             let scroll_x = scroll_x_full % 256;
             let scroll_y = scroll_y_full % 240;
+
+            let h_offset = (scroll_x_full / 256) & 0x01;
+            let v_offset = (scroll_y_full / 240) & 0x01;
+
+            let base_nametable = segment.base_nametable & 0x03;
+            let active_base = (base_nametable ^ (h_offset) ^ (v_offset << 1)) & 0x03;
+            let horizontal_index = (active_base ^ 0x01) & 0x03;
+            let vertical_index = (active_base ^ 0x02) & 0x03;
+            let diagonal_index = (active_base ^ 0x03) & 0x03;
 
             let base_shift_x = -(scroll_x as isize);
             let base_shift_y = -(scroll_y as isize);

@@ -80,6 +80,7 @@ mod interrupt {
 
 pub struct CPU {
     pub registers: Registers,
+    pub vram: [u8; 2048],
     extra_cycles: u8,
     cycles_wait: u8,
     halted: bool,
@@ -96,6 +97,7 @@ impl CPU {
                 pc: PRG_START,
                 sp: 0xFD,
             },
+            vram: [0; 2048],
             extra_cycles: 0,
             cycles_wait: 0,
             halted: false,

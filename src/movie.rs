@@ -84,22 +84,18 @@ impl FM2Movie {
             .read_to_end(&mut buffer)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
-        // Handle UTF-8 encoding issues gracefully
         let contents = String::from_utf8(buffer.clone())
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
 
-        // Split into header and input log
         let mut lines = contents.lines();
         let mut header = String::new();
 
-        // Read header section
         for line in &mut lines {
             if line.trim().is_empty() {
                 continue;
             }
 
             if line.starts_with('|') {
-                // We've reached the input log section
                 break;
             }
 
@@ -109,7 +105,6 @@ impl FM2Movie {
 
         let movie_header = parse_header(&header)?;
 
-        // Parse input log and subtitles from the remaining lines
         let input_log = parse_input_log(lines.clone(), &movie_header)?;
 
         Ok(FM2Movie {
@@ -136,7 +131,6 @@ impl FM2Movie {
             .get_frame_input(frame)
             .ok_or_else(|| format!("Frame {} out of range", frame))?;
 
-        // Apply port0 input
         if let Some(gamepad_input) = &input.port0_input {
             let mut buttons = JoypadButton::empty();
 
@@ -166,11 +160,8 @@ impl FM2Movie {
             }
 
             joypad1.button_status = buttons;
-
-            // println!("{:?}", joypad1.button_status);
         }
 
-        // Apply port1 input
         if let Some(gamepad_input) = &input.port1_input {
             let mut buttons = JoypadButton::empty();
 
@@ -246,8 +237,6 @@ fn parse_header(header_text: &str) -> Result<MovieHeader, String> {
         .get("rerecordCount")
         .and_then(|v| v.parse::<i32>().ok());
 
-    // Emulator is NTSC-only; ignore PAL flags in movie headers to avoid
-    // attempting PAL-specific timing or playback modes.
     let pal_flag = false;
 
     let new_ppu = pairs.get("NewPPU").map(|v| *v == "1").unwrap_or(false);
@@ -314,7 +303,7 @@ fn parse_header(header_text: &str) -> Result<MovieHeader, String> {
         subtitles: Some(subtitles),
         guid,
         rom_checksum,
-        savestate: None, // TODO: Implement savestate parsing
+        savestate: None,
     })
 }
 
@@ -328,14 +317,12 @@ fn parse_input_log(
         return Err("Binary format not supported with line-based parsing".to_string());
     }
 
-    // Parse text format and subtitles from remaining lines
     for line in lines {
         let trimmed_line = line.trim();
         if trimmed_line.is_empty() {
             continue;
         }
 
-        // Check for input log lines
         if !trimmed_line.starts_with('|') || !trimmed_line.ends_with('|') {
             continue;
         }
@@ -343,18 +330,17 @@ fn parse_input_log(
         let record = parse_text_record(trimmed_line, header)?;
         input_log.push(record);
 
-        // Respect length limit if specified
         if let Some(length) = header.length
-            && input_log.len() >= length {
-                break;
-            }
+            && input_log.len() >= length
+        {
+            break;
+        }
     }
 
     Ok(input_log)
 }
 
 fn parse_text_record(line: &str, header: &MovieHeader) -> Result<InputRecord, String> {
-    // Remove leading and trailing pipes
     let content = &line[1..line.len() - 1];
     let fields: Vec<&str> = content.split('|').collect();
 
@@ -390,7 +376,6 @@ fn parse_text_record(line: &str, header: &MovieHeader) -> Result<InputRecord, St
 fn parse_gamepad_input(input: &str) -> Result<GamepadInput, String> {
     let input = input.trim();
 
-    // Handle empty or minimal input
     if input.is_empty() {
         return Ok(GamepadInput {
             right: false,
@@ -406,7 +391,6 @@ fn parse_gamepad_input(input: &str) -> Result<GamepadInput, String> {
 
     let chars: Vec<char> = input.chars().collect();
 
-    // Ensure we have at least 8 characters, pad with dots if necessary
     let mut padded_chars = ['.'; 8];
     for (i, &ch) in chars.iter().take(8).enumerate() {
         padded_chars[i] = ch;

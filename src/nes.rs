@@ -1,4 +1,4 @@
-use crate::{apu::APU, bus::Bus, cart::Cart, cpu::CPU, joypad::Joypad, mapper::Mapper};
+use crate::{apu::APU, bus::Bus, cart::Cart, joypad::Joypad, mapper::Mapper};
 
 pub struct ClockResult {
     pub frame_complete: bool,
@@ -6,7 +6,6 @@ pub struct ClockResult {
 }
 
 pub struct Nes {
-    pub cpu: CPU,
     pub bus: Bus,
     pub system_clock: u64,
 }
@@ -14,14 +13,13 @@ pub struct Nes {
 impl Nes {
     pub fn new(cart: Cart, apu: APU) -> Self {
         Nes {
-            cpu: CPU::new(),
             bus: Bus::new(cart, apu),
             system_clock: 0,
         }
     }
 
     pub fn reset(&mut self) {
-        self.cpu.reset(&mut self.bus);
+        self.bus.cpu_reset();
     }
 
     pub fn clock(&mut self) -> ClockResult {
@@ -29,16 +27,16 @@ impl Nes {
         let mut instruction_complete = false;
 
         if self.system_clock % 3 == 0 {
-            instruction_complete = self.cpu.clock(&mut self.bus);
+            instruction_complete = self.bus.cpu_clock();
             self.bus.clock_apu();
         }
 
         if self.bus.poll_nmi() {
-            self.cpu.nmi(&mut self.bus);
+            self.bus.cpu_nmi();
         }
 
         if self.bus.poll_irq() {
-            self.cpu.irq(&mut self.bus);
+            self.bus.cpu_irq();
         }
 
         self.system_clock = self.system_clock.wrapping_add(1);

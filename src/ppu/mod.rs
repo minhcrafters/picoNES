@@ -71,16 +71,9 @@ impl PPU {
         ppu
     }
 
-    // Horizontal:
-    //   [ A ] [ a ]
-    //   [ B ] [ b ]
-
-    // Vertical:
-    //   [ A ] [ B ]
-    //   [ a ] [ b ]
     pub fn mirror_vram_addr(&self, mapper: &dyn Mapper, addr: u16) -> u16 {
-        let mirrored_vram = addr & 0b10111111111111; // mirror down 0x3000-0x3eff to 0x2000 - 0x2eff
-        let vram_index = mirrored_vram - 0x2000; // to vram vector
+        let mirrored_vram = addr & 0b10111111111111;
+        let vram_index = mirrored_vram - 0x2000;
         let name_table = vram_index / 0x400;
         let mirroring = mapper.mirroring();
         match (mirroring, name_table) {
@@ -94,8 +87,6 @@ impl PPU {
         }
     }
 
-    /// Mirrors palette addresses to the 0x3F00-0x3F1F range, handling the
-    /// universal background color mirrors described at https://www.nesdev.org/wiki/PPU_palettes.
     fn mirror_palette_addr(addr: u16) -> usize {
         let mut palette_index = (addr - 0x3f00) & 0x1f;
         if palette_index >= 0x10 && (palette_index & 0x03) == 0 {
@@ -139,7 +130,9 @@ impl PPU {
     }
 
     fn increment_vram_addr(&mut self) {
-        self.addr.increment(self.ctrl.vram_addr_increment());
+        let step = self.ctrl.vram_addr_increment();
+        self.addr.increment(step);
+        self.scroll.increment(step);
     }
 
     pub fn scroll_segments(&self) -> &[ScrollSegment] {
@@ -147,10 +140,11 @@ impl PPU {
     }
 
     fn current_scroll_descriptor(&self) -> (usize, usize, usize) {
-        let scroll_x = self.scroll.scroll_x_full();
-        let scroll_y = self.scroll.scroll_y_full();
-        let base_nametable = self.scroll.base_nametable();
-        (scroll_x, scroll_y, base_nametable)
+        (
+            self.scroll.scroll_x(),
+            self.scroll.scroll_y(),
+            self.scroll.base_nametable(),
+        )
     }
 
     fn visible_scanline(&self) -> Option<usize> {
@@ -293,13 +287,14 @@ impl PPU {
     pub fn write_to_ppu_addr(&mut self, value: u8) {
         self.addr.update(value);
         let completed_sequence = self.scroll.write_ppu_addr(value);
+
         if completed_sequence {
             self.queue_scroll_state_change(true);
         }
     }
 
     pub fn write_to_data(&mut self, mapper: &mut dyn Mapper, value: u8) {
-        let addr = self.addr.get();
+        let addr = self.scroll.addr();
         match addr {
             0..=0x1fff => mapper.write_chr(addr, value),
             0x2000..=0x3eff => {
@@ -317,7 +312,7 @@ impl PPU {
     }
 
     pub fn read_data(&mut self, mapper: &mut dyn Mapper) -> u8 {
-        let addr = self.addr.get();
+        let addr = self.scroll.addr();
 
         self.increment_vram_addr();
 
@@ -337,7 +332,6 @@ impl PPU {
             }
             0x3f00..=0x3fff => {
                 let palette_index = PPU::mirror_palette_addr(addr);
-                // Palette reads are unbuffered; instead, the read buffer receives the mirrored nametable byte.
                 let mirrored_vram_addr = addr - 0x1000;
                 self.internal_data_buf =
                     self.vram[self.mirror_vram_addr(mapper, mirrored_vram_addr) as usize];
@@ -355,17 +349,20 @@ impl PPU {
     }
 
     pub fn clock(&mut self, mapper: &mut dyn Mapper) -> bool {
-        if self.is_sprite_zero_hit(self.cycle as usize) {
-            self.status.set_sprite_zero_hit(true);
-        }
-
         self.cycle += 1;
+
         if self.cycle >= 341 {
-            self.cycle = 0;
+            if self.is_sprite_zero_hit(self.cycle as usize) {
+                self.status.set_sprite_zero_hit(true);
+            }
+
+            self.cycle -= 341;
+
             if self.scanline < 240 {
                 let rendering_enabled = self.mask.show_background() || self.mask.show_sprites();
                 mapper.handle_scanline(rendering_enabled);
             }
+
             self.scanline += 1;
 
             if self.scanline == 241 {
@@ -428,7 +425,7 @@ pub mod test {
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load_into_buffer
+        ppu.read_data(&mut mapper);
         assert_eq!(ppu.addr.get(), 0x2306);
         assert_eq!(ppu.read_data(&mut mapper), 0x66);
     }
@@ -444,7 +441,7 @@ pub mod test {
         ppu.write_to_ppu_addr(0x21);
         ppu.write_to_ppu_addr(0xff);
 
-        ppu.read_data(&mut mapper); //load_into_buffer
+        ppu.read_data(&mut mapper);
         assert_eq!(ppu.read_data(&mut mapper), 0x66);
         assert_eq!(ppu.read_data(&mut mapper), 0x77);
     }
@@ -461,15 +458,12 @@ pub mod test {
         ppu.write_to_ppu_addr(0x21);
         ppu.write_to_ppu_addr(0xff);
 
-        ppu.read_data(&mut mapper); //load_into_buffer
+        ppu.read_data(&mut mapper);
         assert_eq!(ppu.read_data(&mut mapper), 0x66);
         assert_eq!(ppu.read_data(&mut mapper), 0x77);
         assert_eq!(ppu.read_data(&mut mapper), 0x88);
     }
 
-    // Horizontal: https://wiki.nesdev.com/w/index.php/Mirroring
-    //   [0x2000 A ] [0x2400 a ]
-    //   [0x2800 B ] [0x2C00 b ]
     #[test]
     fn test_vram_horizontal_mirror() {
         let mut mapper = NromMapper::new(vec![], vec![], Mirroring::Horizontal);
@@ -477,29 +471,26 @@ pub mod test {
         ppu.write_to_ppu_addr(0x24);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.write_to_data(&mut mapper, 0x66); //write to a
+        ppu.write_to_data(&mut mapper, 0x66);
 
         ppu.write_to_ppu_addr(0x28);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.write_to_data(&mut mapper, 0x77); //write to B
+        ppu.write_to_data(&mut mapper, 0x77);
 
         ppu.write_to_ppu_addr(0x20);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load into buffer
-        assert_eq!(ppu.read_data(&mut mapper), 0x66); //read from A
+        ppu.read_data(&mut mapper);
+        assert_eq!(ppu.read_data(&mut mapper), 0x66);
 
         ppu.write_to_ppu_addr(0x2C);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load into buffer
-        assert_eq!(ppu.read_data(&mut mapper), 0x77); //read from b
+        ppu.read_data(&mut mapper);
+        assert_eq!(ppu.read_data(&mut mapper), 0x77);
     }
 
-    // Vertical: https://wiki.nesdev.com/w/index.php/Mirroring
-    //   [0x2000 A ] [0x2400 B ]
-    //   [0x2800 a ] [0x2C00 b ]
     #[test]
     fn test_vram_vertical_mirror() {
         let mut mapper = NromMapper::new(vec![], vec![0; 2048], Mirroring::Vertical);
@@ -508,24 +499,24 @@ pub mod test {
         ppu.write_to_ppu_addr(0x20);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.write_to_data(&mut mapper, 0x66); //write to A
+        ppu.write_to_data(&mut mapper, 0x66);
 
         ppu.write_to_ppu_addr(0x2C);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.write_to_data(&mut mapper, 0x77); //write to b
+        ppu.write_to_data(&mut mapper, 0x77);
 
         ppu.write_to_ppu_addr(0x28);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load into buffer
-        assert_eq!(ppu.read_data(&mut mapper), 0x66); //read from a
+        ppu.read_data(&mut mapper);
+        assert_eq!(ppu.read_data(&mut mapper), 0x66);
 
         ppu.write_to_ppu_addr(0x24);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load into buffer
-        assert_eq!(ppu.read_data(&mut mapper), 0x77); //read from B
+        ppu.read_data(&mut mapper);
+        assert_eq!(ppu.read_data(&mut mapper), 0x77);
     }
 
     #[test]
@@ -560,8 +551,8 @@ pub mod test {
 
         assert_eq!(ppu.scroll_segments().len(), 1);
         ppu.scanline = 100;
-        ppu.write_to_scroll(0x14); // coarse X = 0x02, fine X = 4 -> scroll_x = 20
-        ppu.write_to_scroll(0x08); // coarse Y = 1 -> scroll_y = 8
+        ppu.write_to_scroll(0x14);
+        ppu.write_to_scroll(0x08);
 
         assert_eq!(ppu.scroll_segments().len(), 2);
         let segment = &ppu.scroll_segments()[1];
@@ -575,11 +566,10 @@ pub mod test {
         let mut ppu = PPU::empty();
 
         assert_eq!(ppu.scroll_segments()[0].scroll_y, 0);
-        ppu.scanline = 241; // vblank
+        ppu.scanline = 241;
         ppu.write_to_scroll(0x00);
-        ppu.write_to_scroll(0x10); // coarse Y = 2 => scroll_y = 16
+        ppu.write_to_scroll(0x10);
 
-        // simulate start of next frame
         ppu.reset_scroll_segments_for_new_frame();
         assert_eq!(ppu.scroll_segments()[0].scroll_y, 16);
     }
@@ -594,7 +584,7 @@ pub mod test {
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load_into_buffer
+        ppu.read_data(&mut mapper);
         assert_ne!(ppu.read_data(&mut mapper), 0x66);
 
         ppu.read_status();
@@ -602,7 +592,7 @@ pub mod test {
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load_into_buffer
+        ppu.read_data(&mut mapper);
         assert_eq!(ppu.read_data(&mut mapper), 0x66);
     }
 
@@ -613,12 +603,11 @@ pub mod test {
         ppu.write_to_ctrl(0);
         ppu.vram[0x0305] = 0x66;
 
-        ppu.write_to_ppu_addr(0x63); //0x6305 -> 0x2305
+        ppu.write_to_ppu_addr(0x63);
         ppu.write_to_ppu_addr(0x05);
 
-        ppu.read_data(&mut mapper); //load into_buffer
+        ppu.read_data(&mut mapper);
         assert_eq!(ppu.read_data(&mut mapper), 0x66);
-        // assert_eq!(ppu.addr.read(), 0x0306)
     }
 
     #[test]
@@ -636,11 +625,9 @@ pub mod test {
         write_palette(&mut ppu, 0x3f00, 0x11);
         assert_eq!(ppu.palette_table[0x00], 0x11);
 
-        // Sprite universal background mirrors.
         write_palette(&mut ppu, 0x3f10, 0x22);
         assert_eq!(ppu.palette_table[0x00], 0x22);
 
-        // General palette mirroring every 32 bytes.
         write_palette(&mut ppu, 0x3f20, 0x33);
         assert_eq!(ppu.palette_table[0x00], 0x33);
 
@@ -656,13 +643,10 @@ pub mod test {
         let mirrored_vram = ppu.mirror_vram_addr(&mapper, 0x2f00) as usize;
         ppu.vram[mirrored_vram] = 0xaa;
 
-        // Seed palette entry 0.
         ppu.write_to_ppu_addr(0x3f);
         ppu.write_to_ppu_addr(0x00);
         ppu.write_to_data(&mut mapper, 0x2f);
 
-        // Reset address and read back – should bypass the buffered read delay
-        // but refresh the buffer with the mirrored nametable contents.
         ppu.write_to_ppu_addr(0x3f);
         ppu.write_to_ppu_addr(0x00);
         ppu.internal_data_buf = 0;
@@ -707,7 +691,7 @@ pub mod test {
         ppu.write_to_oam_addr(0x10);
         ppu.write_oam_dma(&data);
 
-        ppu.write_to_oam_addr(0xf); //wrap around
+        ppu.write_to_oam_addr(0xf);
         assert_eq!(ppu.read_oam_data(), 0x88);
 
         ppu.write_to_oam_addr(0x10);
