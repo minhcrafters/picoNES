@@ -15,7 +15,7 @@ use sdl2::pixels::PixelFormatEnum;
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
-const SCALE: u32 = 3;
+const SCALE: u32 = 2;
 
 struct AudioCallbackImpl {
     audio_buffer: Arc<Mutex<VecDeque<f32>>>,

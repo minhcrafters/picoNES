@@ -1,4 +1,4 @@
-# pico
+# picoNES
 
 a simple, lightweight NES emulator written in Rust (WIP)
 
