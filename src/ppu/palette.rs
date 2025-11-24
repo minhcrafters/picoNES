@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 pub static SYSTEM_PALLETE: LazyLock<[(u8, u8, u8); 64]> = LazyLock::new(|| {
-    let bytes = include_bytes!("../../palettes/Sony CXA.pal");
+    let bytes = include_bytes!("../../palettes/Composite Direct (FBX).pal");
 
     let colors: Vec<(u8, u8, u8)> = bytes
         .chunks(3)

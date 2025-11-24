@@ -30,6 +30,7 @@ pub struct PPU {
 
     pub oam_addr: u8,
     pub oam_data: [u8; 256],
+    render_oam_data: [u8; 256],
     pub palette_table: [u8; 32],
 
     pub nmi_interrupt: Option<u8>,
@@ -57,6 +58,7 @@ impl PPU {
             addr: AddrRegister::new(),
             vram: [0; 2048],
             oam_data: [0; 64 * 4],
+            render_oam_data: [0; 64 * 4],
             palette_table: [0; 32],
             nmi_interrupt: None,
             cycle: 0,
@@ -68,6 +70,7 @@ impl PPU {
         };
 
         ppu.reset_scroll_segments_for_new_frame();
+        ppu.render_oam_data.copy_from_slice(&ppu.oam_data);
         ppu
     }
 
@@ -139,6 +142,10 @@ impl PPU {
         &self.scroll_segments
     }
 
+    pub fn render_oam(&self) -> &[u8; 256] {
+        &self.render_oam_data
+    }
+
     fn current_scroll_descriptor(&self) -> (usize, usize, usize) {
         (
             self.scroll.scroll_x(),
@@ -206,20 +213,7 @@ impl PPU {
             };
             self.push_scroll_segment(descriptor, scanline, screen_origin);
         } else {
-            let screen_origin = if reset_origin {
-                0
-            } else {
-                self.pending_scroll_descriptor
-                    .map(|(_, _, _, origin)| origin)
-                    .or_else(|| {
-                        self.scroll_segments
-                            .last()
-                            .map(|segment| segment.screen_origin)
-                    })
-                    .unwrap_or(0)
-            };
-            self.pending_scroll_descriptor =
-                Some((descriptor.0, descriptor.1, descriptor.2, screen_origin));
+            self.pending_scroll_descriptor = Some((descriptor.0, descriptor.1, descriptor.2, 0));
         }
     }
 
@@ -366,6 +360,7 @@ impl PPU {
             self.scanline += 1;
 
             if self.scanline == 241 {
+                self.render_oam_data.copy_from_slice(&self.oam_data);
                 self.status.set_vblank_status(true);
                 self.status.set_sprite_zero_hit(false);
                 if self.ctrl.generate_vblank_nmi() {
