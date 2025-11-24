@@ -172,17 +172,18 @@ fn render_sprites(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer, b
         return;
     }
 
+    let oam = ppu.render_oam();
     let sprite_height = ppu.ctrl.sprite_size() as usize;
 
-    for i in (0..ppu.oam_data.len()).step_by(4).rev() {
-        let sprite_y = (ppu.oam_data[i] as u16 + 1) as isize;
+    for i in (0..oam.len()).step_by(4).rev() {
+        let sprite_y = (oam[i] as u16 + 1) as isize;
         if sprite_y >= Framebuffer::HEIGHT as isize + sprite_height as isize {
             continue;
         }
 
-        let sprite_x = ppu.oam_data[i + 3] as isize;
-        let tile_idx = ppu.oam_data[i + 1] as u16;
-        let attributes = ppu.oam_data[i + 2];
+        let sprite_x = oam[i + 3] as isize;
+        let tile_idx = oam[i + 1] as u16;
+        let attributes = oam[i + 2];
 
         let priority_behind_bg = attributes & 0x20 != 0;
         let flip_horizontal = attributes & 0x40 != 0;
@@ -293,7 +294,7 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
             let diagonal_index = (active_base ^ 0x03) & 0x03;
 
             let base_shift_x = -(scroll_x as isize);
-            let base_shift_y = -(scroll_y as isize);
+            let base_shift_y = segment.screen_origin as isize - scroll_y as isize;
             let clip = (clip_start, clip_end);
 
             render_nametable(
