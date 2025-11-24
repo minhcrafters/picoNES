@@ -223,7 +223,7 @@ impl PPU {
         }
     }
 
-    fn reset_scroll_segments_for_new_frame(&mut self) {
+    pub fn reset_scroll_segments_for_new_frame(&mut self) {
         let descriptor = self.pending_scroll_descriptor.take().unwrap_or_else(|| {
             let (scroll_x, scroll_y, base_nametable) = self.current_scroll_descriptor();
             (scroll_x, scroll_y, base_nametable, 0)
@@ -379,7 +379,6 @@ impl PPU {
                 self.nmi_interrupt = None;
                 self.status.set_sprite_zero_hit(false);
                 self.status.reset_vblank_status();
-                self.reset_scroll_segments_for_new_frame();
                 self.frame_count = self.frame_count.wrapping_add(1);
                 return true;
             }
