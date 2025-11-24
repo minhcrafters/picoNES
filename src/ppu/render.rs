@@ -294,7 +294,7 @@ pub fn render(ppu: &PPU, mapper: &mut dyn Mapper, frame: &mut Framebuffer) {
             let diagonal_index = (active_base ^ 0x03) & 0x03;
 
             let base_shift_x = -(scroll_x as isize);
-            let base_shift_y = segment.screen_origin as isize - scroll_y as isize;
+            let base_shift_y = -(scroll_y as isize);
             let clip = (clip_start, clip_end);
 
             render_nametable(
