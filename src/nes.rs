@@ -23,12 +23,12 @@ impl Nes {
     }
 
     pub fn clock(&mut self) -> ClockResult {
-        let frame_complete = self.bus.clock_ppu();
+        let frame_complete = self.bus.ppu_clock();
         let mut instruction_complete = false;
 
         if self.system_clock % 3 == 0 {
             instruction_complete = self.bus.cpu_clock();
-            self.bus.clock_apu();
+            self.bus.apu_clock();
         }
 
         if self.bus.poll_nmi() {

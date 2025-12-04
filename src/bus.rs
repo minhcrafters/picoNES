@@ -59,12 +59,12 @@ impl Bus {
         (&mut left[0], &mut right[0])
     }
 
-    pub fn clock_ppu(&mut self) -> bool {
+    pub fn ppu_clock(&mut self) -> bool {
         let mapper = self.cart.mapper.as_mut();
         self.ppu.clock(mapper)
     }
 
-    pub fn clock_apu(&mut self) {
+    pub fn apu_clock(&mut self) {
         if let Some(addr) = self.apu.clock() {
             let value = self.read(addr);
             self.apu.provide_dmc_sample(value);
